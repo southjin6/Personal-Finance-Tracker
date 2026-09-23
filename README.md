@@ -72,6 +72,45 @@ Two details worth knowing:
   never touches a Server Action, so validation that lives only in application code
   guards nothing.
 
+## Testing the schema locally (optional)
+
+`schema.sql` targets Supabase, so it will not load into a stock PostgreSQL on its own:
+`profiles.id` references `auth.users`, the seed trigger is attached to that table, and every
+policy calls `auth.uid()`. Supabase supplies all three. `supabase/local-dev-stub.sql` stubs
+them so the schema can be loaded and exercised on your own machine:
+
+```bash
+createdb finance_dev
+psql -d finance_dev -f supabase/local-dev-stub.sql
+psql -d finance_dev -f supabase/schema.sql
+```
+
+Then you can watch the pieces work:
+
+```sql
+insert into auth.users (id) values ('11111111-1111-1111-1111-111111111111');
+
+set request.jwt.claim.sub = '11111111-1111-1111-1111-111111111111';
+set role authenticated;
+select count(*) from public.categories;  -- 16, seeded by the trigger
+```
+
+The stub is local-only, and it is actively unsafe anywhere else: it redefines `auth.uid()`
+to trust a session setting that any caller can write, which is precisely what the RLS
+policies exist to prevent. So two rules.
+
+- **Never run `local-dev-stub.sql` against your Supabase project**, and never point
+  `.env.local` at a local database — the app needs Supabase Auth, which the stub does not
+  provide.
+- **Keep the password out of the repo.** Put it in `%APPDATA%\postgresql\pgpass.conf` on
+  Windows (`~/.pgpass` elsewhere), which libpq reads automatically and which lives outside
+  the project directory. Avoid `PGPASSWORD=...` on the command line, which ends up in your
+  shell history.
+
+One trap worth knowing: Row Level Security does not apply to a table's owner or to a
+superuser, so probing the policies as `postgres` passes everything and proves nothing.
+`set role authenticated` first, as above, and every check becomes meaningful.
+
 ## Project structure
 
 ```
@@ -82,6 +121,8 @@ lib/
   supabase/          browser, server and proxy clients, plus cookie options
   validations.ts     zod schemas shared by client and server
 supabase/schema.sql  tables, constraints, RLS policies, seed trigger
+supabase/local-dev-stub.sql
+                     stand-ins for Supabase's auth objects (local testing only)
 proxy.ts             session refresh and route protection (Next 16's middleware)
 ```
 
