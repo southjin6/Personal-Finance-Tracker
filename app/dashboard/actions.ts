@@ -1,33 +1,22 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import {
+  blankToNull,
+  firstIssue,
+  messageForError,
+  requireUser,
+  type ActionState,
+  type Supabase,
+} from "@/lib/actions";
 import { transactionSchema, type TransactionInput } from "@/lib/validations";
 
-export type TransactionFormState = { error?: string; ok?: boolean };
-
-type Supabase = Awaited<ReturnType<typeof createClient>>;
-
-function blankToNull(value?: string) {
-  return value && value.length > 0 ? value : null;
-}
-
-async function requireUser() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) redirect("/login");
-
-  return { supabase, userId: user.id };
-}
+export type TransactionFormState = ActionState;
 
 function parseForm(formData: FormData) {
   const parsed = transactionSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) {
-    return { error: parsed.error.issues[0]?.message ?? "Invalid input" } as const;
+    return { error: firstIssue(parsed.error) } as const;
   }
   return { data: parsed.data } as const;
 }
@@ -75,7 +64,7 @@ export async function createTransaction(
     .from("transactions")
     .insert(toRow(parsed.data, userId));
 
-  if (error) return { error: error.message };
+  if (error) return { error: messageForError(error) };
 
   revalidatePath("/dashboard");
   return { ok: true };
@@ -104,7 +93,7 @@ export async function updateTransaction(
     .eq("user_id", userId)
     .select("id");
 
-  if (error) return { error: error.message };
+  if (error) return { error: messageForError(error) };
   // PostgREST reports success even when the filter matched nothing, so the
   // returning rows are the only proof the row existed. Without this an update
   // that RLS (or a bad id) silently skipped would look like it worked.
@@ -130,7 +119,7 @@ export async function deleteTransaction(
     .eq("user_id", userId)
     .select("id");
 
-  if (error) return { error: error.message };
+  if (error) return { error: messageForError(error) };
   if (!data || data.length === 0) return { error: "Transaction not found." };
 
   revalidatePath("/dashboard");

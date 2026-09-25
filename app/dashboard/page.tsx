@@ -22,7 +22,10 @@ export default async function DashboardPage({
       .from("categories")
       .select("id, name, type, sort_order")
       .order("type")
-      .order("sort_order"),
+      .order("sort_order")
+      // Two categories can share a sort_order after a concurrent insert, so order
+      // by id as well to keep the list stable between renders.
+      .order("id"),
     supabase
       .from("transactions")
       .select(
