@@ -133,14 +133,21 @@ function TransactionRow({
 export function TransactionList({
   transactions,
   categories,
+  emptyMessage = "No transactions yet. Add your first income or expense to get started.",
+  emptyAction,
 }: {
   transactions: Transaction[];
   categories: Category[];
+  emptyMessage?: string;
+  emptyAction?: React.ReactNode;
 }) {
   if (transactions.length === 0) {
     return (
       <div className="text-muted-foreground rounded-lg border border-dashed px-6 py-12 text-center text-sm">
-        No transactions yet. Add your first income or expense to get started.
+        {emptyMessage}
+        {emptyAction ? (
+          <div className="mt-3 flex justify-center">{emptyAction}</div>
+        ) : null}
       </div>
     );
   }

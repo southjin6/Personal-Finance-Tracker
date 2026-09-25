@@ -3,6 +3,13 @@ import * as z from "zod";
 export const AMOUNT_PATTERN = /^\d{1,10}(\.\d{1,2})?$/;
 export const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
+// Deliberately looser than zod's .uuid(): this matches what the Postgres uuid
+// type accepts (any hex 8-4-4-4-12 shape, including the nil uuid and versions
+// outside 1-5). lib/search-params.ts uses it to drop a junk filter value rather
+// than handing PostgREST a string it would answer with a raw 22P02.
+export const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // A shape check alone lets 2026-02-31 through, which would reach Postgres and
 // fail there with a raw error. Round-trip it to prove it is a real calendar date.
 export function isRealISODate(value: string) {

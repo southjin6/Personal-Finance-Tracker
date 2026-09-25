@@ -1,17 +1,17 @@
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
-
-function pageHref(page: number) {
-  return page <= 1 ? "/dashboard" : `/dashboard?page=${page}`;
-}
+import { dashboardHref } from "@/lib/search-params";
+import type { DashboardQuery } from "@/lib/types";
 
 export function TransactionPagination({
   page,
   totalPages,
+  query,
 }: {
   page: number;
   totalPages: number;
+  query: DashboardQuery;
 }) {
   if (totalPages <= 1) return null;
 
@@ -27,7 +27,7 @@ export function TransactionPagination({
       <div className="flex gap-2">
         {page > 1 ? (
           <Button asChild variant="outline" size="sm">
-            <Link href={pageHref(page - 1)} rel="prev">
+            <Link href={dashboardHref({ ...query, page: page - 1 })} rel="prev">
               Previous
             </Link>
           </Button>
@@ -39,7 +39,7 @@ export function TransactionPagination({
 
         {page < totalPages ? (
           <Button asChild variant="outline" size="sm">
-            <Link href={pageHref(page + 1)} rel="next">
+            <Link href={dashboardHref({ ...query, page: page + 1 })} rel="next">
               Next
             </Link>
           </Button>

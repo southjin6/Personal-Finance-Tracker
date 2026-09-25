@@ -1,20 +1,46 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
+import { TransactionFilters } from "@/components/transaction-filters";
 import { TransactionFormDialog } from "@/components/transaction-form";
 import { TransactionList } from "@/components/transaction-list";
 import { TransactionPagination } from "@/components/transaction-pagination";
 import { Button } from "@/components/ui/button";
 import { pageCount, pageRange, parsePage } from "@/lib/pagination";
+import {
+  clearFiltersHref,
+  currentMonth,
+  dashboardHref,
+  dashboardSearch,
+  hasActiveFilters,
+  parseMonth,
+  parseTransactionFilters,
+  type RawSearchParams,
+} from "@/lib/search-params";
 import { createClient } from "@/lib/supabase/server";
-import type { Category, Transaction } from "@/lib/types";
+import { buildTransactionsQuery } from "@/lib/transactions";
+import type { Category, DashboardQuery, Transaction } from "@/lib/types";
 
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string | string[] }>;
+  searchParams: Promise<RawSearchParams>;
 }) {
-  const requestedPage = parsePage((await searchParams).page);
+  const raw = await searchParams;
+  const requestedPage = parsePage(raw.page);
   const { from, to } = pageRange(requestedPage);
+  const filters = parseTransactionFilters(raw);
+
+  const thisMonth = currentMonth();
+  const month = parseMonth(raw.month, thisMonth);
+  const query: DashboardQuery = {
+    ...filters,
+    page: requestedPage,
+    // null means "the month we are in", so the default period never has to be
+    // spelled out in a URL and a shared link keeps following the calendar.
+    month: month === thisMonth ? null : month,
+  };
+
   const supabase = await createClient();
 
   const [categoriesResult, transactionsResult] = await Promise.all([
@@ -26,27 +52,30 @@ export default async function DashboardPage({
       // Two categories can share a sort_order after a concurrent insert, so order
       // by id as well to keep the list stable between renders.
       .order("id"),
-    supabase
-      .from("transactions")
-      .select(
-        "id, type, amount, occurred_on, notes, payment_method, category_id",
-        { count: "exact" }
-      )
-      .order("occurred_on", { ascending: false })
-      .order("created_at", { ascending: false })
-      // Final tiebreak: rows sharing a timestamp would otherwise page in an
-      // undefined order, which can repeat or skip one across pages.
-      .order("id")
-      .range(from, to),
+    buildTransactionsQuery(supabase, filters, { count: true }).range(from, to),
   ]);
 
-  const totalPages = pageCount(transactionsResult.count ?? 0);
+  const totalCount = transactionsResult.count ?? 0;
+  const totalPages = pageCount(totalCount);
+
   if (requestedPage > totalPages) {
-    redirect(totalPages === 1 ? "/dashboard" : `/dashboard?page=${totalPages}`);
+    // Built the same way the links are, so ?page=5 against a filter that only
+    // fills 2 pages lands on that filter's page 2 instead of dropping it.
+    redirect(dashboardHref({ ...query, page: totalPages }));
   }
 
   const categories: Category[] = categoriesResult.data ?? [];
   const transactions: Transaction[] = transactionsResult.data ?? [];
+  const filtered = hasActiveFilters(filters);
+
+  // Filters only: the month scopes the insights panel, not this list, so it has
+  // no business in the file's URL — and no page param either, since the export
+  // is the whole filtered set rather than the current page.
+  const exportHref = `/dashboard/transactions/export${dashboardSearch({
+    ...filters,
+    page: null,
+    month: null,
+  })}`;
 
   return (
     <div className="space-y-6">
@@ -60,11 +89,24 @@ export default async function DashboardPage({
           </p>
         </div>
 
-        <TransactionFormDialog
-          categories={categories}
-          trigger={<Button>Add transaction</Button>}
-        />
+        <div className="flex shrink-0 gap-2">
+          {/* A plain anchor rather than next/link, which would prefetch the whole
+              file on hover. The download name comes from the response, not from
+              here and never from the query string. */}
+          <Button asChild variant="outline">
+            <a href={exportHref}>
+              Export {totalCount} {totalCount === 1 ? "transaction" : "transactions"}
+            </a>
+          </Button>
+
+          <TransactionFormDialog
+            categories={categories}
+            trigger={<Button>Add transaction</Button>}
+          />
+        </div>
       </div>
+
+      <TransactionFilters query={query} categories={categories} />
 
       {transactionsResult.error ? (
         <p className="text-destructive text-sm">
@@ -75,8 +117,24 @@ export default async function DashboardPage({
           <TransactionList
             transactions={transactions}
             categories={categories}
+            emptyMessage={
+              filtered
+                ? "No transactions match these filters."
+                : undefined
+            }
+            emptyAction={
+              filtered ? (
+                <Button asChild variant="outline" size="sm">
+                  <Link href={clearFiltersHref(query)}>Clear filters</Link>
+                </Button>
+              ) : null
+            }
           />
-          <TransactionPagination page={requestedPage} totalPages={totalPages} />
+          <TransactionPagination
+            page={requestedPage}
+            totalPages={totalPages}
+            query={query}
+          />
         </>
       )}
     </div>
