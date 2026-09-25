@@ -25,6 +25,9 @@ Amounts are in PHP (₱).
 - Find and export: filter by type, category, date range and notes text, then download
   exactly the filtered set as CSV
 - Savings goals with progress toward a target, an optional deadline, and overdue highlighting
+- Category budgets: one recurring limit per expense category, applied to whichever month is
+  selected. The dashboard shows the limits that exist as a compact block, and `/dashboard/budgets`
+  has the full cards, with a bar that turns red once a category is over
 - Add, rename and delete your own categories
 - Server-side route protection: `/dashboard` redirects to `/login` when unauthenticated
 
@@ -63,9 +66,10 @@ Amounts are in PHP (₱).
 
 ## Database
 
-Four tables — `profiles`, `categories`, `transactions` and `savings_goals`. Row Level
-Security is enabled on all four, each with a policy that constrains both `using` and
-`with check`, so a session can only read and write rows it owns.
+Five tables — `profiles`, `categories`, `transactions`, `savings_goals` and
+`category_budgets`. Row Level Security is enabled on all five, each with a policy that
+constrains both `using` and `with check`, so a session can only read and write rows it
+owns.
 
 Four details worth knowing:
 
@@ -100,6 +104,25 @@ Four details worth knowing:
   direction is read from `transactions.type`, not from the category's, because the
   database cannot cheaply stop a direct REST caller from filing an expense under an income
   category — the cards and the chart must not disagree about which way the money moved.
+- **Category budgets reuse both tricks, and build on the aggregate.** `category_budgets`
+  holds one row per category (`unique (user_id, category_id)`), which is also the conflict
+  target the form upserts on: choosing a category that already has a limit sets that limit,
+  rather than failing with "that already exists". Its foreign key is the same composite
+  `(category_id, user_id)` reference described above, but with `on delete cascade` instead
+  of `no action` — a budget is a rule *about* a category and means nothing once the
+  category is gone, whereas deleting a category that still has transactions is refused
+  rather than silently taking the history with it. `monthly_budget_progress(p_month)` then
+  reads `monthly_summary` through a `left join lateral`, so a category with a limit and no
+  spending still appears at zero, and the remaining amount is signed: an overspent category
+  reports a negative balance instead of being clamped, which is what lets the bar go red
+  and say by how much. Like `monthly_summary` it is `security invoker`, and
+  `category_budgets` is the one table here with no `anon` grant at all.
+
+  One rule the database does not enforce: that a limit may only be set on an *expense*
+  category. Checking it there would take a trigger reading another table on every write, so
+  the Server Action checks it instead — while the foreign key still proves the category is
+  the caller's. A direct REST caller can therefore put a limit on an income category; it
+  would simply never be spent against, since income never contributes to `expense_total`.
 
 ## Testing the schema locally (optional)
 
@@ -144,14 +167,15 @@ superuser, so probing the policies as `postgres` passes everything and proves no
 
 ```
 app/                 routes — login, auth callback, dashboard
-  dashboard/         transactions, categories and goals, each with its own Server Actions
+  dashboard/         transactions, categories, goals and budgets, each with its own
+                     Server Actions
 components/          UI, including the form/list pair per feature
 lib/
   supabase/          browser, server and proxy clients, plus cookie options
   validations.ts     zod schemas shared by client and server
   money.ts           amounts to integer cents, for sums that cannot drift
-  insights.ts        normalises the aggregate payload and buckets it for the chart
-supabase/schema.sql  tables, constraints, RLS policies, seed trigger, monthly aggregate
+  insights.ts        normalises the aggregate payloads and buckets one for the chart
+supabase/schema.sql  tables, constraints, RLS policies, seed trigger, monthly aggregates
 supabase/local-dev-stub.sql
                      stand-ins for Supabase's auth objects (local testing only)
 proxy.ts             session refresh and route protection (Next 16's middleware)

@@ -1,5 +1,9 @@
 import { sumCents, toCents } from "@/lib/money";
-import type { MonthlySummaryRow, TransactionType } from "@/lib/types";
+import type {
+  BudgetProgressRow,
+  MonthlySummaryRow,
+  TransactionType,
+} from "@/lib/types";
 
 export type MonthlyTotals = {
   incomeCents: number;
@@ -83,6 +87,47 @@ export function normalizeSummary(data: unknown): MonthlySummaryRow[] {
       incomeTotal,
       expenseTotal,
       txnCount,
+    });
+  }
+
+  return rows;
+}
+
+// Same contract as normalizeSummary above, for the budgets aggregate: the RPC
+// payload is untyped, every field is coerced, and an unreadable row is dropped
+// rather than rendered as "₱NaN". No asType call — there is no type column in
+// this result, because budgets only ever apply to expense categories.
+export function normalizeBudgetProgress(data: unknown): BudgetProgressRow[] {
+  if (!Array.isArray(data)) return [];
+
+  const rows: BudgetProgressRow[] = [];
+
+  for (const raw of data) {
+    if (typeof raw !== "object" || raw === null) continue;
+
+    const row = raw as Record<string, unknown>;
+    const categoryId = asString(row.category_id);
+    const categoryName = asString(row.category_name);
+    const budgetAmount = asNumber(row.budget_amount);
+    const spentAmount = asNumber(row.spent_amount);
+    const remainingAmount = asNumber(row.remaining_amount);
+
+    if (
+      categoryId === null ||
+      categoryName === null ||
+      budgetAmount === null ||
+      spentAmount === null ||
+      remainingAmount === null
+    ) {
+      continue;
+    }
+
+    rows.push({
+      categoryId,
+      categoryName,
+      budgetAmount,
+      spentAmount,
+      remainingAmount,
     });
   }
 

@@ -7,7 +7,7 @@ import { TransactionFormDialog } from "@/components/transaction-form";
 import { TransactionList } from "@/components/transaction-list";
 import { TransactionPagination } from "@/components/transaction-pagination";
 import { Button } from "@/components/ui/button";
-import { normalizeSummary } from "@/lib/insights";
+import { normalizeBudgetProgress, normalizeSummary } from "@/lib/insights";
 import { pageCount, pageRange, parsePage } from "@/lib/pagination";
 import {
   clearFiltersHref,
@@ -46,20 +46,25 @@ export default async function DashboardPage({
 
   const supabase = await createClient();
 
-  const [categoriesResult, transactionsResult, summaryResult] = await Promise.all([
-    supabase
-      .from("categories")
-      .select("id, name, type, sort_order")
-      .order("type")
-      .order("sort_order")
-      // Two categories can share a sort_order after a concurrent insert, so order
-      // by id as well to keep the list stable between renders.
-      .order("id"),
-    buildTransactionsQuery(supabase, filters, { count: true }).range(from, to),
-    // One call for the panel: the database does the summing, so nothing has to
-    // be transferred and re-added here, and the month bounds stay in SQL.
-    supabase.rpc("monthly_summary", { p_month: firstOfMonth(month) }),
-  ]);
+  const [categoriesResult, transactionsResult, summaryResult, budgetsResult] =
+    await Promise.all([
+      supabase
+        .from("categories")
+        .select("id, name, type, sort_order")
+        .order("type")
+        .order("sort_order")
+        // Two categories can share a sort_order after a concurrent insert, so order
+        // by id as well to keep the list stable between renders.
+        .order("id"),
+      buildTransactionsQuery(supabase, filters, { count: true }).range(from, to),
+      // One call for the panel: the database does the summing, so nothing has to
+      // be transferred and re-added here, and the month bounds stay in SQL.
+      supabase.rpc("monthly_summary", { p_month: firstOfMonth(month) }),
+      // A second call for the budgets block, deliberately not folded into the one
+      // above: the two fail independently, and a database that predates the
+      // budgets schema should still render the cards and the chart.
+      supabase.rpc("monthly_budget_progress", { p_month: firstOfMonth(month) }),
+    ]);
 
   const totalCount = transactionsResult.count ?? 0;
   const totalPages = pageCount(totalCount);
@@ -101,6 +106,8 @@ export default async function DashboardPage({
         thisMonth={thisMonth}
         rows={summaryRows}
         error={summaryResult.error}
+        budgetRows={normalizeBudgetProgress(budgetsResult.data)}
+        budgetError={budgetsResult.error}
       />
 
       <section className="space-y-4">

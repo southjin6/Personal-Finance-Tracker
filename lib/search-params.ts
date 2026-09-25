@@ -161,3 +161,11 @@ export function dashboardHref(
 export function clearFiltersHref(query: DashboardQuery): string {
   return dashboardHref({ ...query, ...NO_FILTERS, page: null });
 }
+
+// The budgets page has no filters and no paging, so the month is the only thing
+// its URL carries. Built through the same serializer as /dashboard, so the month
+// key and its "the current month means no parameter" rule cannot drift apart
+// between the two pages.
+export function budgetsHref(month: string | null): string {
+  return `/dashboard/budgets${dashboardSearch({ ...NO_FILTERS, page: null, month })}`;
+}

@@ -25,6 +25,14 @@ export type SavingsGoal = {
   deadline: string | null;
 };
 
+// A standing limit for one expense category, in force for every month. There is
+// no month column, so the id is what an edit or delete addresses.
+export type CategoryBudget = {
+  id: string;
+  category_id: string;
+  amount: number;
+};
+
 // `null` means "not filtering on this", never "the empty string". lib/search-params.ts
 // is the only module that builds these from URL input.
 export type TransactionFilters = {
@@ -53,5 +61,21 @@ export type MonthlySummaryRow = {
   incomeTotal: number;
   expenseTotal: number;
   txnCount: number;
+};
+
+// One row of the monthly_budget_progress() aggregate, same contract as
+// MonthlySummaryRow: amounts stay in the numeric domain until lib/money.ts
+// converts them, and lib/insights.ts is the only module that builds these.
+// remainingAmount is signed on purpose — an overspent category shows a negative
+// balance rather than being clamped at zero, so the page can say how far over
+// the limit it went. `categoryId`, not `id`: the RPC reports progress per
+// category, and the budget's own id comes from a separate read of
+// category_budgets.
+export type BudgetProgressRow = {
+  categoryId: string;
+  categoryName: string;
+  budgetAmount: number;
+  spentAmount: number;
+  remainingAmount: number;
 };
 

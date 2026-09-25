@@ -1,11 +1,18 @@
+import Link from "next/link";
 import { cn } from "cn";
 
+import { BudgetProgress } from "@/components/budget-progress";
 import { MonthPicker } from "@/components/month-picker";
 import { SpendingChart } from "@/components/spending-chart";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatMonthLabel, formatPHPFromCents } from "@/lib/format";
 import { spendingSlices, totalsOf } from "@/lib/insights";
-import type { DashboardQuery, MonthlySummaryRow } from "@/lib/types";
+import { dashboardHref } from "@/lib/search-params";
+import type {
+  BudgetProgressRow,
+  DashboardQuery,
+  MonthlySummaryRow,
+} from "@/lib/types";
 
 function StatCard({
   label,
@@ -57,18 +64,81 @@ function SummaryError({ error }: { error: { code?: string } }) {
   );
 }
 
+// The budgets block is a second, independent read, so it fails on its own terms:
+// a database that predates this step must not lose the cards above it. Silence
+// on an empty list is deliberate -- a dashboard should not advertise a feature
+// that is switched off -- but a *failure* is loud, because silence there would
+// look like "you have no budgets" when the truth is "we could not ask".
+function BudgetsBlock({
+  rows,
+  error,
+  month,
+}: {
+  rows: BudgetProgressRow[];
+  error?: { code?: string } | null;
+  month: string;
+}) {
+  if (error) {
+    return (
+      <div className="rounded-lg border border-dashed px-6 py-6 text-center">
+        <p className="text-destructive text-sm font-medium">
+          Could not load your budgets.
+        </p>
+        <p className="text-muted-foreground mt-1 text-sm">
+          {error.code === "PGRST202"
+            ? "The monthly_budget_progress function is not in your database yet. Paste the latest supabase/schema.sql into the Supabase SQL Editor, then refresh."
+            : "Something went wrong while loading this panel. Please refresh the page."}
+        </p>
+      </div>
+    );
+  }
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="rounded-lg border p-4">
+      <div className="flex items-baseline justify-between gap-2">
+        <h3 className="text-sm font-medium">Budgets</h3>
+        <Link
+          href="/dashboard/budgets"
+          className="text-muted-foreground hover:text-foreground text-xs"
+        >
+          Manage
+        </Link>
+      </div>
+
+      <div className="mt-4 space-y-3">
+        {rows.map((row) => (
+          <div key={row.categoryId}>
+            <p className="mb-1 text-sm">{row.categoryName}</p>
+            <BudgetProgress row={row} variant="compact" />
+          </div>
+        ))}
+      </div>
+
+      <p className="text-muted-foreground mt-3 text-xs">
+        Limits apply to every month, including {formatMonthLabel(month)}.
+      </p>
+    </div>
+  );
+}
+
 export function InsightsPanel({
   query,
   month,
   thisMonth,
   rows,
   error,
+  budgetRows,
+  budgetError,
 }: {
   query: DashboardQuery;
   month: string;
   thisMonth: string;
   rows: MonthlySummaryRow[];
   error?: { code?: string } | null;
+  budgetRows: BudgetProgressRow[];
+  budgetError?: { code?: string } | null;
 }) {
   const monthName = formatMonthLabel(month);
   const totals = totalsOf(rows);
@@ -93,7 +163,11 @@ export function InsightsPanel({
 
         {/* Independent of the list's own from/to filters on purpose: this scopes
             the panel only, so the list's pagination stays unambiguous. */}
-        <MonthPicker query={query} month={month} thisMonth={thisMonth} />
+        <MonthPicker
+          month={month}
+          thisMonth={thisMonth}
+          hrefFor={(target) => dashboardHref({ ...query, month: target })}
+        />
       </div>
 
       {error ? (
@@ -138,6 +212,10 @@ export function InsightsPanel({
           </div>
         </>
       )}
+
+      {/* Outside the branch above: the summary and the budgets are separate
+          reads, so one failing says nothing about the other. */}
+      <BudgetsBlock rows={budgetRows} error={budgetError} month={month} />
     </section>
   );
 }

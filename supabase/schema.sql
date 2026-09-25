@@ -71,8 +71,41 @@ create table if not exists public.savings_goals (
   created_at     timestamptz not null default now()
 );
 
+-- One recurring spending limit per expense category, managed at
+-- /dashboard/budgets. There is deliberately no month column: a row is a
+-- standing rule about a category, and the page applies it to whichever month is
+-- selected.
+create table if not exists public.category_budgets (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null references public.profiles (id) on delete cascade,
+  category_id  uuid not null,
+  amount       numeric(12, 2) not null check (amount > 0),
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now(),
+  -- One budget per category per user. This is also the conflict target
+  -- saveBudget upserts on, so it has to sit on exactly these two columns.
+  constraint category_budgets_user_id_category_id_key unique (user_id, category_id),
+  -- Same composite trick as transactions: pairing category_id with user_id puts
+  -- the owner inside the reference, so a budget cannot name another user's
+  -- category. CASCADE here, unlike the transactions key, because a budget is a
+  -- rule *about* a category and means nothing once the category is gone --
+  -- whereas a category with transactions is refused rather than taking the
+  -- history down with it.
+  constraint category_budgets_category_id_user_id_fkey
+    foreign key (category_id, user_id) references public.categories (id, user_id)
+    on delete cascade
+);
+
 create index if not exists transactions_user_id_occurred_on_idx
   on public.transactions (user_id, occurred_on desc);
+
+-- The unique constraint above indexes (user_id, category_id); the RI trigger
+-- fired by a category delete looks referencing rows up by (category_id,
+-- user_id), which that index cannot serve -- its leading column is user_id.
+-- Same reasoning as transactions_category_id_user_id_idx, whose index the
+-- inline unique constraint on transactions does not provide either.
+create index if not exists category_budgets_category_id_user_id_idx
+  on public.category_budgets (category_id, user_id);
 
 -- ---------------------------------------------------------------------------
 -- Column bounds
@@ -127,25 +160,29 @@ alter table public.savings_goals add constraint savings_goals_saved_amount_withi
 
 
 -- ---------------------------------------------------------------------------
--- Referential integrity: a transaction may only reference a category owned by
--- the same user. See the comment on the transactions table for why a
--- single-column foreign key cannot enforce that.
+-- Referential integrity: a child row may only reference a category owned by the
+-- same user. See the comment on the transactions table for why a single-column
+-- foreign key cannot enforce that.
 --
 -- Repeated via ALTER and not only inline in CREATE TABLE, because
 -- "create table if not exists" is a no-op on a database that already has the
 -- table: without this block an existing database would keep the old
 -- single-column constraint and its behaviour.
 --
--- The drops run first, and both foreign keys go before the unique constraint:
--- the new foreign key depends on categories_id_user_id_key, so dropping that
--- constraint while either key exists fails. "transactions_category_id_fkey" is
--- the name PostgreSQL derives by default for a foreign key on
--- transactions(category_id); it is dropped so the old, weaker reference cannot
--- survive alongside the new one.
+-- The drops run first, and every foreign key that depends on
+-- categories_id_user_id_key goes before it: dropping that unique constraint
+-- while a dependent key exists fails ("cannot drop constraint ... because other
+-- objects depend on it"). "transactions_category_id_fkey" is the name
+-- PostgreSQL derives by default for a foreign key on transactions(category_id);
+-- it is dropped so the old, weaker reference cannot survive alongside the new
+-- one. The category_budgets pair is not upgrading anything -- the table is new
+-- in this version -- it is here so the ordering against the unique constraint is
+-- fixed on every run, including the second one.
 -- ---------------------------------------------------------------------------
 
 alter table public.transactions drop constraint if exists transactions_category_id_fkey;
 alter table public.transactions drop constraint if exists transactions_category_id_user_id_fkey;
+alter table public.category_budgets drop constraint if exists category_budgets_category_id_user_id_fkey;
 
 alter table public.categories drop constraint if exists categories_id_user_id_key;
 alter table public.categories add constraint categories_id_user_id_key unique (id, user_id);
@@ -153,6 +190,10 @@ alter table public.categories add constraint categories_id_user_id_key unique (i
 alter table public.transactions add constraint transactions_category_id_user_id_fkey
   foreign key (category_id, user_id) references public.categories (id, user_id)
   on delete no action;
+
+alter table public.category_budgets add constraint category_budgets_category_id_user_id_fkey
+  foreign key (category_id, user_id) references public.categories (id, user_id)
+  on delete cascade;
 
 -- The referencing side of a foreign key is not indexed automatically, and the
 -- RI trigger looks rows up by (category_id, user_id) on every category delete.
@@ -168,6 +209,7 @@ alter table public.profiles      enable row level security;
 alter table public.categories    enable row level security;
 alter table public.transactions  enable row level security;
 alter table public.savings_goals enable row level security;
+alter table public.category_budgets enable row level security;
 
 drop policy if exists "Users manage their own profile" on public.profiles;
 create policy "Users manage their own profile"
@@ -189,15 +231,25 @@ create policy "Users manage their own savings goals"
   on public.savings_goals for all to authenticated
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
+drop policy if exists "Users manage their own category budgets" on public.category_budgets;
+create policy "Users manage their own category budgets"
+  on public.category_budgets for all to authenticated
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
 grant usage on schema public to anon, authenticated;
+
+-- "anon" is deliberately absent for category_budgets. The anon selects are
+-- vestigial -- every page reads through an authenticated session -- and a
+-- budget reveals what a user spends on a category, which is the one table here
+-- whose emptiness for an unauthenticated caller is worth not re-deciding later.
 grant select on public.profiles, public.categories, public.transactions, public.savings_goals to anon;
-grant select, insert, update, delete on public.profiles, public.categories, public.transactions, public.savings_goals to authenticated;
+grant select, insert, update, delete on public.profiles, public.categories, public.transactions, public.savings_goals, public.category_budgets to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Reporting: one monthly aggregate, defined once.
--- The insights panel on /dashboard is the consumer today; the budgets page in
--- the next step composes this same function through a lateral join, so month
--- bounds live here rather than being re-derived per feature.
+-- The insights panel on /dashboard and the budgets page both consume it -- the
+-- latter through a lateral join -- so month bounds live here rather than being
+-- re-derived per feature.
 --
 -- SECURITY INVOKER is stated explicitly even though it is the default, because
 -- it is the entire safety argument: the function runs with the caller's
@@ -265,6 +317,55 @@ $$;
 revoke all on function public.monthly_summary(date) from public;
 grant execute on function public.monthly_summary(date) to authenticated;
 
+-- Budget vs. actual for one month: every budget the caller owns, with what has
+-- been spent against its category in that month. Built on monthly_summary
+-- rather than re-deriving the totals, so a limit and the chart above it can
+-- never disagree about what a category cost.
+--
+-- LEFT JOIN LATERAL, not a plain join: a category with a budget and no spending
+-- must still appear, at zero spent. The right-hand side is a set-returning
+-- function over a constant argument, so "lateral" costs nothing here -- it is
+-- what lets the function read the caller's rows in the same statement.
+--
+-- Same invoker/stable reasoning as monthly_summary above: the RLS policies on
+-- category_budgets and categories still apply, and the inner call keeps applying
+-- its own. remaining_amount is signed on purpose -- overspending shows as a
+-- negative balance rather than being clamped, because the page has to be able to
+-- say how far over the limit a category went.
+--
+-- Defined after monthly_summary because a language sql body is parsed and
+-- resolved at CREATE time, and search_path = '' means the reference has to be
+-- schema-qualified -- the function must already exist.
+create or replace function public.monthly_budget_progress(p_month date)
+returns table (
+  category_id       uuid,
+  category_name     text,
+  budget_amount     numeric(12, 2),
+  spent_amount      numeric(14, 2),
+  remaining_amount  numeric(14, 2)
+)
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select b.category_id,
+         c.name,
+         b.amount,
+         coalesce(s.expense_total, 0)::numeric(14, 2),
+         (b.amount - coalesce(s.expense_total, 0))::numeric(14, 2)
+  from public.category_budgets b
+  join public.categories c on c.id = b.category_id and c.user_id = b.user_id
+  left join lateral (
+    select * from public.monthly_summary(p_month)
+  ) s on s.category_id = b.category_id
+  where b.user_id = (select auth.uid())
+  order by c.name, b.category_id;
+$$;
+
+revoke all on function public.monthly_budget_progress(date) from public;
+grant execute on function public.monthly_budget_progress(date) to authenticated;
+
 -- ---------------------------------------------------------------------------
 -- updated_at maintenance
 -- ---------------------------------------------------------------------------
@@ -299,6 +400,11 @@ alter table public.savings_goals add column if not exists updated_at timestamptz
 drop trigger if exists savings_goals_set_updated_at on public.savings_goals;
 create trigger savings_goals_set_updated_at
   before update on public.savings_goals
+  for each row execute function public.set_updated_at();
+
+drop trigger if exists category_budgets_set_updated_at on public.category_budgets;
+create trigger category_budgets_set_updated_at
+  before update on public.category_budgets
   for each row execute function public.set_updated_at();
 
 -- ---------------------------------------------------------------------------

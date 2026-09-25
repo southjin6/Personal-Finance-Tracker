@@ -19,19 +19,28 @@ export function isRealISODate(value: string) {
   );
 }
 
-// Amount is validated as a string so the exact same schema can validate both
-// the browser form and the FormData the server action receives.
+// Shared by every form that writes a positive numeric(12,2) amount:
+// transactions, savings goals and category budgets all bound it identically.
+// Validated as a string so the exact same schema can validate both the browser
+// form and the FormData the server action receives.
+//
+// Match the shape before coercing: Number() also accepts "1e9", "0x10" and
+// extra decimals, which numeric(12,2) would either store as a huge value or
+// silently round. {1,10} integer digits + {1,2} decimals mirrors numeric(12,2).
+// The "> 0" half of the bound is left to each consumer, because the message has
+// to name the field ("Amount must be greater than 0" vs "Limit must be ...").
+const amountField = z
+  .string()
+  .trim()
+  .min(1, "Enter an amount")
+  .regex(AMOUNT_PATTERN, "Enter a valid amount, like 12.50");
+
 export const transactionSchema = z.object({
   type: z.enum(["income", "expense"]),
-  // Match the shape before coercing: Number() also accepts "1e9", "0x10" and
-  // extra decimals, which numeric(12,2) would either store as a huge value or
-  // silently round. {1,10} integer digits + {1,2} decimals mirrors numeric(12,2).
-  amount: z
-    .string()
-    .trim()
-    .min(1, "Enter an amount")
-    .regex(AMOUNT_PATTERN, "Enter a valid amount, like 12.50")
-    .refine((value) => Number(value) > 0, "Amount must be greater than 0"),
+  amount: amountField.refine(
+    (value) => Number(value) > 0,
+    "Amount must be greater than 0"
+  ),
   category_id: z.string().uuid("Choose a category"),
   occurred_on: z
     .string()
@@ -69,11 +78,6 @@ export type CategoryRenameInput = z.infer<typeof categoryRenameSchema>;
 // 0 <= saved_amount <= target_amount. The cross-field rule is repeated here
 // because the form should explain the problem, not surface a raw 23514 from
 // PostgREST, which is directly reachable with a session.
-const goalAmountField = z
-  .string()
-  .trim()
-  .min(1, "Enter an amount")
-  .regex(AMOUNT_PATTERN, "Enter a valid amount, like 12.50");
 
 // Blank means "nothing saved yet", which is the normal case for a new goal, so
 // an empty box is valid rather than an error — the action turns "" into 0.
@@ -101,7 +105,7 @@ const optionalDateField = z
 export const savingsGoalSchema = z
   .object({
     name: nameField,
-    target_amount: goalAmountField.refine(
+    target_amount: amountField.refine(
       (value) => Number(value) > 0,
       "Target must be greater than 0"
     ),
@@ -117,3 +121,25 @@ export const savingsGoalSchema = z
   );
 
 export type SavingsGoalInput = z.infer<typeof savingsGoalSchema>;
+
+// Category budgets -----------------------------------------------------------
+
+// A standing limit per expense category, applied to whichever month is on
+// screen. The bounds live in the category_budgets table (amount > 0), but the
+// form explains them rather than surfacing a raw 23514 from PostgREST, which is
+// directly reachable with a session.
+//
+// The category_id check here is a uuid shape only. Whether the category is an
+// expense, and whether it belongs to the caller, are both decided in the action
+// (see app/dashboard/budgets/actions.ts): the first is not expressible in this
+// schema, and the second is enforced by the composite foreign key plus RLS, not
+// by zod.
+export const budgetSchema = z.object({
+  category_id: z.string().uuid("Choose a category"),
+  amount: amountField.refine(
+    (value) => Number(value) > 0,
+    "Limit must be greater than 0"
+  ),
+});
+
+export type BudgetInput = z.infer<typeof budgetSchema>;
