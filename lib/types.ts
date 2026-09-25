@@ -17,6 +17,14 @@ export type Transaction = {
   category_id: string;
 };
 
+export type SavingsGoal = {
+  id: string;
+  name: string;
+  target_amount: number;
+  saved_amount: number;
+  deadline: string | null;
+};
+
 // `null` means "not filtering on this", never "the empty string". lib/search-params.ts
 // is the only module that builds these from URL input.
 export type TransactionFilters = {
@@ -33,3 +41,17 @@ export type DashboardQuery = TransactionFilters & {
   page: number | null;
   month: string | null;
 };
+
+// One row of the monthly_summary() aggregate, exactly as PostgREST sends it:
+// the totals stay in the numeric(12,2) domain until lib/money.ts converts them.
+// lib/insights.ts is the only module that builds these — the RPC payload is
+// untyped, so it is normalised there.
+export type MonthlySummaryRow = {
+  categoryId: string;
+  categoryName: string;
+  categoryType: TransactionType;
+  incomeTotal: number;
+  expenseTotal: number;
+  txnCount: number;
+};
+

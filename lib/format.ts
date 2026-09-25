@@ -3,8 +3,32 @@ const peso = new Intl.NumberFormat("en-PH", {
   currency: "PHP",
 });
 
+const monthLabel = new Intl.DateTimeFormat("en-PH", {
+  month: "long",
+  year: "numeric",
+});
+
 export function formatPHP(amount: number) {
   return peso.format(amount);
+}
+
+// Cents in, currency out. The division is display-only, which is the one place
+// lib/money.ts allows a float: the formatter rounds it back to two decimals.
+export function formatPHPFromCents(cents: number) {
+  return peso.format(cents / 100);
+}
+
+// "2026-09" -> "September 2026". Built from parts for the same reason formatDate
+// is: a string like "2026-09" parsed as a Date would be UTC midnight and could
+// shift a day (and a month) in a negative-offset timezone.
+export function formatMonthLabel(month: string) {
+  const [year, monthNumber] = month.split("-").map(Number);
+
+  const date = new Date(year, monthNumber - 1, 1);
+  // The constructor maps years 0-99 to 1900+year; assign the real one back.
+  date.setFullYear(year);
+
+  return monthLabel.format(date);
 }
 
 export function formatDate(isoDate: string) {

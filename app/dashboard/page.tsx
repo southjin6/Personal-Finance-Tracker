@@ -1,17 +1,20 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
+import { InsightsPanel } from "@/components/insights-panel";
 import { TransactionFilters } from "@/components/transaction-filters";
 import { TransactionFormDialog } from "@/components/transaction-form";
 import { TransactionList } from "@/components/transaction-list";
 import { TransactionPagination } from "@/components/transaction-pagination";
 import { Button } from "@/components/ui/button";
+import { normalizeSummary } from "@/lib/insights";
 import { pageCount, pageRange, parsePage } from "@/lib/pagination";
 import {
   clearFiltersHref,
   currentMonth,
   dashboardHref,
   dashboardSearch,
+  firstOfMonth,
   hasActiveFilters,
   parseMonth,
   parseTransactionFilters,
@@ -43,7 +46,7 @@ export default async function DashboardPage({
 
   const supabase = await createClient();
 
-  const [categoriesResult, transactionsResult] = await Promise.all([
+  const [categoriesResult, transactionsResult, summaryResult] = await Promise.all([
     supabase
       .from("categories")
       .select("id, name, type, sort_order")
@@ -53,6 +56,9 @@ export default async function DashboardPage({
       // by id as well to keep the list stable between renders.
       .order("id"),
     buildTransactionsQuery(supabase, filters, { count: true }).range(from, to),
+    // One call for the panel: the database does the summing, so nothing has to
+    // be transferred and re-added here, and the month bounds stay in SQL.
+    supabase.rpc("monthly_summary", { p_month: firstOfMonth(month) }),
   ]);
 
   const totalCount = transactionsResult.count ?? 0;
@@ -66,6 +72,9 @@ export default async function DashboardPage({
 
   const categories: Category[] = categoriesResult.data ?? [];
   const transactions: Transaction[] = transactionsResult.data ?? [];
+  // The RPC payload is untyped, so it goes through the normaliser before it can
+  // reach a component — a malformed row becomes an absent row, never a ₱NaN.
+  const summaryRows = normalizeSummary(summaryResult.data);
   const filtered = hasActiveFilters(filters);
 
   // Filters only: the month scopes the insights panel, not this list, so it has
@@ -78,65 +87,83 @@ export default async function DashboardPage({
   })}`;
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Transactions
-          </h1>
-          <p className="text-muted-foreground text-sm">
-            Your income and expenses, most recent first.
-          </p>
-        </div>
-
-        <div className="flex shrink-0 gap-2">
-          {/* A plain anchor rather than next/link, which would prefetch the whole
-              file on hover. The download name comes from the response, not from
-              here and never from the query string. */}
-          <Button asChild variant="outline">
-            <a href={exportHref}>
-              Export {totalCount} {totalCount === 1 ? "transaction" : "transactions"}
-            </a>
-          </Button>
-
-          <TransactionFormDialog
-            categories={categories}
-            trigger={<Button>Add transaction</Button>}
-          />
-        </div>
+    <div className="space-y-8">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+        <p className="text-muted-foreground text-sm">
+          Your income and expenses at a glance.
+        </p>
       </div>
 
-      <TransactionFilters query={query} categories={categories} />
+      <InsightsPanel
+        query={query}
+        month={month}
+        thisMonth={thisMonth}
+        rows={summaryRows}
+        error={summaryResult.error}
+      />
 
-      {transactionsResult.error ? (
-        <p className="text-destructive text-sm">
-          Could not load transactions: {transactionsResult.error.message}
-        </p>
-      ) : (
-        <>
-          <TransactionList
-            transactions={transactions}
-            categories={categories}
-            emptyMessage={
-              filtered
-                ? "No transactions match these filters."
-                : undefined
-            }
-            emptyAction={
-              filtered ? (
-                <Button asChild variant="outline" size="sm">
-                  <Link href={clearFiltersHref(query)}>Clear filters</Link>
-                </Button>
-              ) : null
-            }
-          />
-          <TransactionPagination
-            page={requestedPage}
-            totalPages={totalPages}
-            query={query}
-          />
-        </>
-      )}
+      <section className="space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold tracking-tight">
+              Transactions
+            </h2>
+            <p className="text-muted-foreground text-sm">
+              Your income and expenses, most recent first.
+            </p>
+          </div>
+
+          <div className="flex shrink-0 gap-2">
+            {/* A plain anchor rather than next/link, which would prefetch the whole
+                file on hover. The download name comes from the response, not from
+                here and never from the query string. */}
+            <Button asChild variant="outline">
+              <a href={exportHref}>
+                Export {totalCount}{" "}
+                {totalCount === 1 ? "transaction" : "transactions"}
+              </a>
+            </Button>
+
+            <TransactionFormDialog
+              categories={categories}
+              trigger={<Button>Add transaction</Button>}
+            />
+          </div>
+        </div>
+
+        <TransactionFilters query={query} categories={categories} />
+
+        {transactionsResult.error ? (
+          <p className="text-destructive text-sm">
+            Could not load transactions: {transactionsResult.error.message}
+          </p>
+        ) : (
+          <>
+            <TransactionList
+              transactions={transactions}
+              categories={categories}
+              emptyMessage={
+                filtered
+                  ? "No transactions match these filters."
+                  : undefined
+              }
+              emptyAction={
+                filtered ? (
+                  <Button asChild variant="outline" size="sm">
+                    <Link href={clearFiltersHref(query)}>Clear filters</Link>
+                  </Button>
+                ) : null
+              }
+            />
+            <TransactionPagination
+              page={requestedPage}
+              totalPages={totalPages}
+              query={query}
+            />
+          </>
+        )}
+      </section>
     </div>
   );
 }

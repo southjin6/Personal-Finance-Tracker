@@ -7,6 +7,7 @@ import { cn } from "cn";
 const LINKS = [
   { href: "/dashboard", label: "Transactions" },
   { href: "/dashboard/categories", label: "Categories" },
+  { href: "/dashboard/goals", label: "Goals" },
 ];
 
 export function DashboardNav() {

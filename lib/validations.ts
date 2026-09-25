@@ -43,21 +43,77 @@ export const transactionSchema = z.object({
 
 export type TransactionInput = z.infer<typeof transactionSchema>;
 
-// Mirrors the categories_name_length CHECK: char_length(name) between 1 and 100.
-export const categoryNameField = z
+// Mirrors the *_name_length CHECK constraints: char_length(name) between 1 and
+// 100. Shared by categories and savings goals, which bound a name identically.
+export const nameField = z
   .string()
   .trim()
   .min(1, "Enter a name")
   .max(100, "Name must be 100 characters or fewer");
 
 export const categorySchema = z.object({
-  name: categoryNameField,
+  name: nameField,
   type: z.enum(["income", "expense"]),
 });
 
 // Renaming takes the name only. The type is immutable once a category exists —
 // see app/dashboard/categories/actions.ts for why.
-export const categoryRenameSchema = z.object({ name: categoryNameField });
+export const categoryRenameSchema = z.object({ name: nameField });
 
 export type CategoryInput = z.infer<typeof categorySchema>;
 export type CategoryRenameInput = z.infer<typeof categoryRenameSchema>;
+
+// Savings goals --------------------------------------------------------------
+
+// Bounds mirror the savings_goals CHECK constraints: target_amount > 0 and
+// 0 <= saved_amount <= target_amount. The cross-field rule is repeated here
+// because the form should explain the problem, not surface a raw 23514 from
+// PostgREST, which is directly reachable with a session.
+const goalAmountField = z
+  .string()
+  .trim()
+  .min(1, "Enter an amount")
+  .regex(AMOUNT_PATTERN, "Enter a valid amount, like 12.50");
+
+// Blank means "nothing saved yet", which is the normal case for a new goal, so
+// an empty box is valid rather than an error — the action turns "" into 0.
+// AMOUNT_PATTERN has no sign, so a negative value cannot be entered at all.
+const optionalAmountField = z
+  .string()
+  .trim()
+  .refine(
+    (value) => value.length === 0 || AMOUNT_PATTERN.test(value),
+    "Enter a valid amount, like 12.50"
+  );
+
+// Blank means "no deadline". A shape check alone would let 2026-02-31 through,
+// so round-trip it the same way transactionSchema.occurred_on does.
+const optionalDateField = z
+  .string()
+  .trim()
+  .refine(
+    (value) =>
+      value.length === 0 ||
+      (ISO_DATE_PATTERN.test(value) && isRealISODate(value)),
+    "Choose a valid date"
+  );
+
+export const savingsGoalSchema = z
+  .object({
+    name: nameField,
+    target_amount: goalAmountField.refine(
+      (value) => Number(value) > 0,
+      "Target must be greater than 0"
+    ),
+    saved_amount: optionalAmountField,
+    deadline: optionalDateField,
+  })
+  .refine(
+    (goal) => Number(goal.saved_amount || "0") <= Number(goal.target_amount),
+    {
+      message: "Saved so far cannot be more than the target.",
+      path: ["saved_amount"],
+    }
+  );
+
+export type SavingsGoalInput = z.infer<typeof savingsGoalSchema>;

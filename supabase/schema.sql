@@ -59,7 +59,8 @@ create table if not exists public.transactions (
     on delete no action
 );
 
--- Groundwork only — no UI in this build.
+-- Per-user savings goals, managed at /dashboard/goals. saved_amount is capped at
+-- target_amount and updated_at is maintained, both added in the sections below.
 create table if not exists public.savings_goals (
   id             uuid primary key default gen_random_uuid(),
   user_id        uuid not null references public.profiles (id) on delete cascade,
@@ -107,6 +108,22 @@ alter table public.savings_goals add constraint savings_goals_name_length
 alter table public.savings_goals drop constraint if exists savings_goals_saved_amount_non_negative;
 alter table public.savings_goals add constraint savings_goals_saved_amount_non_negative
   check (saved_amount >= 0);
+
+-- A goal cannot be funded past its target. The goals page enforces this in zod,
+-- but that layer is skippable over REST (see the note at the top of this
+-- section), so the ceiling belongs in the table too.
+--
+-- The clamp is the price of adding that ceiling to a table which already
+-- exists, and it is not decoration: the SQL Editor runs this whole file as ONE
+-- transaction, so a single ADD CONSTRAINT that fails on an existing over-funded
+-- row would roll back every statement in the file. Clamping first makes the
+-- constraint safe to add. It is a no-op on a fresh database, and savings_goals
+-- has never had a UI, so in practice it can only touch hand-inserted rows.
+update public.savings_goals set saved_amount = target_amount where saved_amount > target_amount;
+
+alter table public.savings_goals drop constraint if exists savings_goals_saved_amount_within_target;
+alter table public.savings_goals add constraint savings_goals_saved_amount_within_target
+  check (saved_amount <= target_amount);
 
 
 -- ---------------------------------------------------------------------------
@@ -177,6 +194,78 @@ grant select on public.profiles, public.categories, public.transactions, public.
 grant select, insert, update, delete on public.profiles, public.categories, public.transactions, public.savings_goals to authenticated;
 
 -- ---------------------------------------------------------------------------
+-- Reporting: one monthly aggregate, defined once.
+-- The insights panel on /dashboard is the consumer today; the budgets page in
+-- the next step composes this same function through a lateral join, so month
+-- bounds live here rather than being re-derived per feature.
+--
+-- SECURITY INVOKER is stated explicitly even though it is the default, because
+-- it is the entire safety argument: the function runs with the caller's
+-- privileges, so the RLS policies on both tables still apply. A SECURITY
+-- DEFINER function runs as its owner and bypasses them -- one missing predicate
+-- and it returns every user's rows.
+--
+-- SECURITY INVOKER is also the reason this is a function and not a view. A view
+-- created without "with (security_invoker = true)" reads with the *owner's*
+-- privileges, and the option is one careless deploy away from a silent full
+-- leak. A function can also take the month as an argument, which keeps the
+-- month bounds in SQL instead of drifting into TypeScript and re-aggregating
+-- all history on every render.
+--
+-- stable, not volatile, so the planner may fold it and PostgREST treats the
+-- call as read-only.
+-- ---------------------------------------------------------------------------
+
+create or replace function public.monthly_summary(p_month date)
+returns table (
+  category_id    uuid,
+  category_name  text,
+  category_type  text,
+  income_total   numeric(14, 2),
+  expense_total  numeric(14, 2),
+  txn_count      bigint
+)
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  with bounds as (
+    -- Snapped to the first of its month inside the function, so a hand-crafted
+    -- RPC call cannot ask for an off-month range: the argument selects a month,
+    -- never an arbitrary window.
+    select p_month - (extract(day from p_month)::int - 1)                              as start_on,
+           (p_month - (extract(day from p_month)::int - 1) + interval '1 month')::date as end_on
+  )
+  select c.id,
+         c.name,
+         c.type,
+         -- Direction comes from the transaction, NOT from the category. A direct
+         -- REST caller can file an expense against an income category, since the
+         -- database cannot check that pair cheaply; deriving the direction here
+         -- keeps the cards and the chart in agreement about which way money moved.
+         sum(case when t.type = 'income'  then t.amount else 0 end)::numeric(14, 2) as income_total,
+         sum(case when t.type = 'expense' then t.amount else 0 end)::numeric(14, 2) as expense_total,
+         count(*)                                                                    as txn_count
+  from public.transactions t
+  join public.categories c on c.id = t.category_id and c.user_id = t.user_id
+  cross join bounds b
+  -- Redundant against RLS on purpose: two independent defences, so a future
+  -- policy regression does not become a cross-tenant read on its own. The
+  -- c.user_id = t.user_id join condition above is the third.
+  where t.user_id = (select auth.uid())
+    and t.occurred_on >= b.start_on
+    and t.occurred_on <  b.end_on
+  group by c.id, c.name, c.type
+  order by c.type, c.name;
+$$;
+
+-- Order matters: CREATE FUNCTION grants EXECUTE to PUBLIC by default, so the
+-- revoke has to come before the grant for authenticated or anon would keep it.
+revoke all on function public.monthly_summary(date) from public;
+grant execute on function public.monthly_summary(date) to authenticated;
+
+-- ---------------------------------------------------------------------------
 -- updated_at maintenance
 -- ---------------------------------------------------------------------------
 
@@ -198,6 +287,18 @@ create trigger profiles_set_updated_at
 drop trigger if exists transactions_set_updated_at on public.transactions;
 create trigger transactions_set_updated_at
   before update on public.transactions
+  for each row execute function public.set_updated_at();
+
+-- savings_goals had no updated_at while it was groundwork only. Now that a goal
+-- can be edited, an UPDATE has something to record. Added via ALTER rather than
+-- inline in CREATE TABLE for the same reason as the constraints above:
+-- "create table if not exists" is a no-op on a database that already has the
+-- table, so an existing database would never pick the column up.
+alter table public.savings_goals add column if not exists updated_at timestamptz not null default now();
+
+drop trigger if exists savings_goals_set_updated_at on public.savings_goals;
+create trigger savings_goals_set_updated_at
+  before update on public.savings_goals
   for each row execute function public.set_updated_at();
 
 -- ---------------------------------------------------------------------------
