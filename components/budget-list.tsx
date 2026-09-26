@@ -22,21 +22,26 @@ import type { BudgetProgressRow, Category, CategoryBudget } from "@/lib/types";
 
 function BudgetCard({
   row,
-  budget,
   categories,
   takenCategoryIds,
 }: {
   row: BudgetProgressRow;
-  budget?: CategoryBudget;
   categories: Category[];
   takenCategoryIds: string[];
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, startTransition] = useTransition();
 
-  function onDelete() {
-    if (!budget) return;
+  // Rebuilt from the aggregate row rather than read back from category_budgets:
+  // the id an edit or a delete addresses comes down with the amounts, so it
+  // cannot be missing for a card that is on screen.
+  const budget: CategoryBudget = {
+    id: row.budgetId,
+    category_id: row.categoryId,
+    amount: row.budgetAmount,
+  };
 
+  function onDelete() {
     startTransition(async () => {
       const result = await deleteBudget(budget.id);
       if (result.error) {
@@ -53,53 +58,47 @@ function BudgetCard({
       <div className="flex items-start justify-between gap-2">
         <p className="font-medium">{row.categoryName}</p>
 
-        {/* The progress rows and the budgets rows are two separate reads, so a
-            category can in principle arrive without its budget's id. It still has
-            amounts worth showing, but there is nothing to edit or delete — and a
-            button that silently does nothing would be worse than no button. */}
-        {budget ? (
-          <div className="flex gap-1">
-            <BudgetFormDialog
-              categories={categories}
-              takenCategoryIds={takenCategoryIds}
-              budget={budget}
-              trigger={
-                <Button variant="ghost" size="sm">
-                  Edit
-                </Button>
-              }
-            />
+        <div className="flex gap-1">
+          <BudgetFormDialog
+            categories={categories}
+            takenCategoryIds={takenCategoryIds}
+            budget={budget}
+            trigger={
+              <Button variant="ghost" size="sm">
+                Edit
+              </Button>
+            }
+          />
 
-            <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-              <AlertDialogTrigger asChild>
-                <Button variant="ghost" size="sm" className="text-destructive">
-                  Delete
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Remove this budget?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    The limit for {row.categoryName} will be deleted. Your
-                    transactions are not affected — only the limit goes.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    disabled={pending}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      onDelete();
-                    }}
-                  >
-                    {pending ? "Removing…" : "Remove"}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          </div>
-        ) : null}
+          <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+            <AlertDialogTrigger asChild>
+              <Button variant="ghost" size="sm" className="text-destructive">
+                Delete
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Remove this budget?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  The limit for {row.categoryName} will be deleted. Your
+                  transactions are not affected — only the limit goes.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  disabled={pending}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    onDelete();
+                  }}
+                >
+                  {pending ? "Removing…" : "Remove"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
       </div>
 
       <div className="mt-4">
@@ -111,11 +110,9 @@ function BudgetCard({
 
 export function BudgetList({
   progress,
-  budgets,
   categories,
 }: {
   progress: BudgetProgressRow[];
-  budgets: CategoryBudget[];
   categories: Category[];
 }) {
   if (progress.length === 0) {
@@ -126,10 +123,7 @@ export function BudgetList({
     );
   }
 
-  const budgetByCategory = new Map(
-    budgets.map((budget) => [budget.category_id, budget])
-  );
-  const takenCategoryIds = budgets.map((budget) => budget.category_id);
+  const takenCategoryIds = progress.map((row) => row.categoryId);
 
   return (
     <div className="grid gap-4 sm:grid-cols-2">
@@ -137,7 +131,6 @@ export function BudgetList({
         <BudgetCard
           key={row.categoryId}
           row={row}
-          budget={budgetByCategory.get(row.categoryId)}
           categories={categories}
           takenCategoryIds={takenCategoryIds}
         />

@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
+import type * as z from "zod";
 
 import { createGoal, updateGoal } from "@/app/dashboard/goals/actions";
 import { Button } from "@/components/ui/button";
@@ -43,7 +44,16 @@ export function GoalFormDialog({ goal, trigger }: Props) {
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
 
-  const form = useForm<SavingsGoalInput>({
+  // The two optional boxes carry .default("") so a request that omits the key
+  // outright parses the same as one that sends it blank. That is what makes the
+  // schema's input type (keys optional) differ from its output type (keys filled
+  // in), and the form needs both: the resolver validates the input, while
+  // onSubmit receives the output. A single generic would have to pick one.
+  const form = useForm<
+    z.input<typeof savingsGoalSchema>,
+    unknown,
+    SavingsGoalInput
+  >({
     resolver: zodResolver(savingsGoalSchema),
     defaultValues: defaults(goal),
   });

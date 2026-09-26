@@ -33,6 +33,10 @@ function isProtected(pathname: string) {
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
+  // Held apart from response.headers, which also carries Next's internal
+  // x-middleware-next marker. The SDK passes these once per request, alongside a
+  // cookie write, so they can be replayed onto a different response below.
+  let authHeaders: Record<string, string> = {};
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -56,6 +60,7 @@ export async function updateSession(request: NextRequest) {
           Object.entries(headers).forEach(([key, value]) =>
             response.headers.set(key, value)
           );
+          authHeaders = headers;
         },
       },
     }
@@ -71,7 +76,18 @@ export async function updateSession(request: NextRequest) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.search = "";
-    return NextResponse.redirect(url);
+
+    // getUser() above can refresh the session, or clear a dead one, writing
+    // cookies and no-store headers onto `response` through setAll. Returning a
+    // fresh redirect dropped both: the browser kept a cookie the server had just
+    // replaced, so the next request repeated the same refresh, and a proxy was
+    // free to cache a response that had carried session cookies.
+    const redirect = NextResponse.redirect(url);
+    response.cookies.getAll().forEach((cookie) => redirect.cookies.set(cookie));
+    Object.entries(authHeaders).forEach(([key, value]) =>
+      redirect.headers.set(key, value)
+    );
+    return redirect;
   }
 
   return response;

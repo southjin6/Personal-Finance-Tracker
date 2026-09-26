@@ -26,14 +26,20 @@ function GoalCard({ goal }: { goal: SavingsGoal }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, startTransition] = useTransition();
 
-  const percent =
+  // Completion is derived from the amounts, never from the rounded percentage:
+  // 9995 of 10000 rounds to 100%, and treating that as complete suppressed the
+  // overdue line for a goal that was still short of its target.
+  const complete =
+    goal.target_amount > 0 && goal.saved_amount >= goal.target_amount;
+  const rounded =
     goal.target_amount > 0
       ? Math.round((goal.saved_amount / goal.target_amount) * 100)
       : 0;
-  const complete = percent >= 100;
-  // The savings_goals_saved_amount_within_target CHECK makes saved > target
-  // unreachable through the app, so this is a display guard only: the bar never
-  // overflows its track, while the label still reports the true percentage.
+  // A short goal must not round up to 100 either, or the label would contradict
+  // the card it sits on. Above the target it keeps reporting the true figure --
+  // reachable only by a direct write, since the CHECK forbids saved > target.
+  const percent = complete ? rounded : Math.min(rounded, 99);
+  // The bar never overflows its track; the label is what reports an overshoot.
   const barValue = Math.min(percent, 100);
   const overdue =
     goal.deadline !== null && !complete && goal.deadline < todayISO();
@@ -131,6 +137,9 @@ function GoalCard({ goal }: { goal: SavingsGoal }) {
 
         <Progress
           value={barValue}
+          // Radix renders role="progressbar" with no name, so the bar needs one of
+          // its own for a reader to say what the percentage is progress toward.
+          aria-label={`${goal.name} progress`}
           className={cn(
             "h-2",
             complete && "[&>[data-slot=progress-indicator]]:bg-emerald-600"

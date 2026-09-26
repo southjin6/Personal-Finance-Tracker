@@ -54,6 +54,10 @@ export function BudgetProgress({
 
       <Progress
         value={barValue}
+        // Radix renders role="progressbar", which carries no name of its own, so
+        // a reader announces only "progress bar, 67%" with no idea of what is
+        // being measured.
+        aria-label={`${row.categoryName} budget`}
         className={cn(
           compact ? "h-1.5" : "h-2",
           over &&

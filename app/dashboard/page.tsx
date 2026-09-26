@@ -2,10 +2,10 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { InsightsPanel } from "@/components/insights-panel";
+import { ListPagination } from "@/components/list-pagination";
 import { TransactionFilters } from "@/components/transaction-filters";
 import { TransactionFormDialog } from "@/components/transaction-form";
 import { TransactionList } from "@/components/transaction-list";
-import { TransactionPagination } from "@/components/transaction-pagination";
 import { Button } from "@/components/ui/button";
 import { normalizeBudgetProgress, normalizeSummary } from "@/lib/insights";
 import { pageCount, pageRange, parsePage } from "@/lib/pagination";
@@ -69,10 +69,23 @@ export default async function DashboardPage({
   const totalCount = transactionsResult.count ?? 0;
   const totalPages = pageCount(totalCount);
 
-  if (requestedPage > totalPages) {
-    // Built the same way the links are, so ?page=5 against a filter that only
-    // fills 2 pages lands on that filter's page 2 instead of dropping it.
-    redirect(dashboardHref({ ...query, page: totalPages }));
+  // A satisfiable range already implies requestedPage <= totalPages, so this used
+  // to be the only way to land here: PostgREST answers PGRST103 (416) once the
+  // requested window starts at or past the end of the set, and reports no count
+  // with that answer -- leaving nothing to clamp against. Ask for the count on its
+  // own instead, filter for filter, since a request with no range cannot be
+  // unsatisfiable. Built the same way the links are, so ?page=5 against a filter
+  // that only fills 2 pages lands on that filter's page 2 rather than dropping to
+  // page 1. Any other failure falls through to the message below.
+  if (transactionsResult.error?.code === "PGRST103") {
+    const { count: total } = await buildTransactionsQuery(supabase, filters, {
+      count: true,
+      head: true,
+    });
+
+    if (total !== null) {
+      redirect(dashboardHref({ ...query, page: pageCount(total) }));
+    }
   }
 
   const categories: Category[] = categoriesResult.data ?? [];
@@ -122,29 +135,64 @@ export default async function DashboardPage({
           </div>
 
           <div className="flex shrink-0 gap-2">
-            {/* A plain anchor rather than next/link, which would prefetch the whole
-                file on hover. The download name comes from the response, not from
-                here and never from the query string. */}
-            <Button asChild variant="outline">
-              <a href={exportHref}>
-                Export {totalCount}{" "}
-                {totalCount === 1 ? "transaction" : "transactions"}
-              </a>
-            </Button>
+            {/* Withheld when the read failed, for the same reason as the dialog
+                below: the label is the count, and a failed read leaves it at 0,
+                so the button claimed "Export 0 transactions" above a message
+                saying the transactions could not be loaded. The export route
+                reads the same set and would refuse anyway. */}
+            {transactionsResult.error ? null : (
+              // A plain anchor rather than next/link, which would prefetch the
+              // whole file on hover. The download name comes from the response,
+              // not from here and never from the query string.
+              <Button asChild variant="outline">
+                <a href={exportHref}>
+                  Export {totalCount}{" "}
+                  {totalCount === 1 ? "transaction" : "transactions"}
+                </a>
+              </Button>
+            )}
 
-            <TransactionFormDialog
-              categories={categories}
-              trigger={<Button>Add transaction</Button>}
-            />
+            {/* Withheld when the read failed: the dialog's picker is built from
+                the category list, so an empty one is a dead end. */}
+            {categoriesResult.error ? null : (
+              <TransactionFormDialog
+                categories={categories}
+                trigger={<Button>Add transaction</Button>}
+              />
+            )}
           </div>
         </div>
 
-        <TransactionFilters query={query} categories={categories} />
+        {/* Withheld for the same reason as the dialog: every option in the
+            category menu comes from that list, and an active ?category_id=
+            filter would otherwise render as "All categories" while the list
+            stayed filtered. */}
+        {categoriesResult.error ? null : (
+          <TransactionFilters query={query} categories={categories} />
+        )}
 
+        {/* Two separate failure modes, so two branches. A failed transactions
+            read is just a missing list, but a failed categories read used to be
+            swallowed here and rendered every row as "Uncategorized" -- a claim
+            the data denies, since category_id is not null -- above an empty
+            filter menu and a dead-end Add dialog. That section now comes down
+            instead, the way the budgets page does.
+            Neither branch prints the driver's message: Postgres text names our
+            tables and constraints, and tells the reader nothing they can do. */}
         {transactionsResult.error ? (
           <p className="text-destructive text-sm">
-            Could not load transactions: {transactionsResult.error.message}
+            Could not load your transactions. Please refresh the page.
           </p>
+        ) : categoriesResult.error ? (
+          <div className="rounded-lg border border-dashed px-6 py-12 text-center">
+            <p className="text-destructive text-sm font-medium">
+              Could not load your categories.
+            </p>
+            <p className="text-muted-foreground mt-1 text-sm">
+              Category names come from that list, so the transactions are hidden
+              until it loads. Please refresh the page.
+            </p>
+          </div>
         ) : (
           <>
             <TransactionList
@@ -163,10 +211,11 @@ export default async function DashboardPage({
                 ) : null
               }
             />
-            <TransactionPagination
+            <ListPagination
               page={requestedPage}
               totalPages={totalPages}
-              query={query}
+              label="Transaction pages"
+              hrefFor={(target) => dashboardHref({ ...query, page: target })}
             />
           </>
         )}

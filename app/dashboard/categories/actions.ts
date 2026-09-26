@@ -28,17 +28,25 @@ async function nameTaken(
   type: TransactionType,
   name: string,
   excludeId?: string
-) {
-  const { data } = await supabase
+): Promise<{ taken: boolean } | { error: string }> {
+  const { data, error } = await supabase
     .from("categories")
     .select("id, name")
     .eq("user_id", userId)
     .eq("type", type);
 
+  // A discarded error here read as "no duplicate", so a transient read failure
+  // let a duplicate through. Separate "checked, not taken" from "not checked".
+  if (error) {
+    return { error: "Could not check your categories. Please try again." };
+  }
+
   const target = name.toLowerCase();
-  return (data ?? []).some(
-    (row) => row.id !== excludeId && row.name.trim().toLowerCase() === target
-  );
+  return {
+    taken: (data ?? []).some(
+      (row) => row.id !== excludeId && row.name.trim().toLowerCase() === target
+    ),
+  };
 }
 
 export async function createCategory(
@@ -51,14 +59,16 @@ export async function createCategory(
 
   const { name, type } = parsed.data;
 
-  if (await nameTaken(supabase, userId, type, name)) {
+  const nameCheck = await nameTaken(supabase, userId, type, name);
+  if ("error" in nameCheck) return { error: nameCheck.error };
+  if (nameCheck.taken) {
     return { error: `You already have an ${type} category called "${name}".` };
   }
 
   // Appended within the user's own (user_id, type) group. Reading the current
   // maximum and writing max + 1 can race across two tabs, but two equal
   // sort_order values are harmless because every reader falls back to id.
-  const { data: last } = await supabase
+  const { data: last, error: lastError } = await supabase
     .from("categories")
     .select("sort_order")
     .eq("user_id", userId)
@@ -66,6 +76,12 @@ export async function createCategory(
     .order("sort_order", { ascending: false })
     .limit(1)
     .maybeSingle();
+
+  // Without this the failure fell through as `last = null`, so the new row took
+  // sort_order 1 and collided with an existing row instead of appending.
+  if (lastError) {
+    return { error: "Could not add your category. Please try again." };
+  }
 
   const { error } = await supabase.from("categories").insert({
     user_id: userId,
@@ -96,16 +112,31 @@ export async function renameCategory(
   const parsed = categoryRenameSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: firstIssue(parsed.error) };
 
-  const { data: current } = await supabase
+  const { data: current, error: currentError } = await supabase
     .from("categories")
     .select("type")
     .eq("id", id)
     .eq("user_id", userId)
     .maybeSingle();
 
+  // A discarded error made a failed read indistinguishable from "no such row",
+  // so a transient failure reported "Category not found." for a category that
+  // exists.
+  if (currentError) {
+    return { error: "Could not load this category. Please try again." };
+  }
+
   if (!current) return { error: "Category not found." };
 
-  if (await nameTaken(supabase, userId, current.type, parsed.data.name, id)) {
+  const nameCheck = await nameTaken(
+    supabase,
+    userId,
+    current.type,
+    parsed.data.name,
+    id
+  );
+  if ("error" in nameCheck) return { error: nameCheck.error };
+  if (nameCheck.taken) {
     return { error: `You already have a category called "${parsed.data.name}".` };
   }
 

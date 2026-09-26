@@ -11,14 +11,14 @@ import {
   type RawSearchParams,
 } from "@/lib/search-params";
 import { createClient } from "@/lib/supabase/server";
-import type { Category, CategoryBudget } from "@/lib/types";
+import type { Category } from "@/lib/types";
 
-// The answers a database that predates this step gives: the function is not in
-// the schema cache (PGRST202), the table is not either (PGRST205), or Postgres
-// itself reports the relation missing (42P01). Distinguished from a transient
-// failure so the page can say what to actually do about it.
+// The answer a database that predates this step gives: the function is not in
+// the schema cache (PGRST202), or Postgres reports a relation the function's body
+// reads as missing (42P01) when a paste was partial. Distinguished from a
+// transient failure so the page can say what to actually do about it.
 function isMissingSchema(code?: string) {
-  return code === "PGRST202" || code === "PGRST205" || code === "42P01";
+  return code === "PGRST202" || code === "42P01";
 }
 
 export default async function BudgetsPage({
@@ -32,28 +32,20 @@ export default async function BudgetsPage({
 
   const supabase = await createClient();
 
-  const [categoriesResult, budgetsResult, progressResult] = await Promise.all([
+  const [categoriesResult, progressResult] = await Promise.all([
     supabase
       .from("categories")
       .select("id, name, type, sort_order")
       .order("name")
       .order("id"),
-    supabase
-      .from("category_budgets")
-      .select("id, category_id, amount")
-      // Ordered for stability only: the list's own order comes from the progress
-      // RPC, which sorts by name. The explicit limit is still needed because
-      // PostgREST caps a response at the project's max-rows and would truncate
-      // silently otherwise.
-      .order("category_id")
-      .limit(200),
     // Spending comes from the same aggregate the dashboard's chart uses, so a
-    // limit and the chart cannot disagree about what a category cost.
+    // limit and the chart cannot disagree about what a category cost -- and the
+    // budget's own id rides along in the same row, so there is no second read to
+    // cap and no card that can arrive without its buttons.
     supabase.rpc("monthly_budget_progress", { p_month: firstOfMonth(month) }),
   ]);
 
-  const loadError =
-    progressResult.error ?? budgetsResult.error ?? categoriesResult.error;
+  const loadError = progressResult.error ?? categoriesResult.error;
 
   const categories: Category[] = categoriesResult.data ?? [];
   // Budgets only apply to spending, so the form is not offered the income
@@ -62,7 +54,6 @@ export default async function BudgetsPage({
   const expenseCategories = categories.filter(
     (category) => category.type === "expense"
   );
-  const budgets: CategoryBudget[] = budgetsResult.data ?? [];
   const progress = normalizeBudgetProgress(progressResult.data);
 
   return (
@@ -87,7 +78,7 @@ export default async function BudgetsPage({
           {loadError ? null : (
             <BudgetFormDialog
               categories={expenseCategories}
-              takenCategoryIds={budgets.map((budget) => budget.category_id)}
+              takenCategoryIds={progress.map((row) => row.categoryId)}
               trigger={<Button>Add budget</Button>}
             />
           )}
@@ -106,11 +97,7 @@ export default async function BudgetsPage({
           </p>
         </div>
       ) : (
-        <BudgetList
-          progress={progress}
-          budgets={budgets}
-          categories={expenseCategories}
-        />
+        <BudgetList progress={progress} categories={expenseCategories} />
       )}
     </div>
   );

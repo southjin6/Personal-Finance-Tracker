@@ -8,9 +8,14 @@ import { buildTransactionsQuery } from "@/lib/transactions";
 import type { Transaction } from "@/lib/types";
 
 // PostgREST caps a response at the project's max-rows, so one big select would
-// silently truncate. Batches of 1000 keep every request under any sane cap; the
-// ceiling stops a runaway export from paging forever.
+// silently truncate. Batches of 1000 keep every request under any sane cap.
 const BATCH_SIZE = 1000;
+
+// The most rows one file will hold. Counted before any row is fetched rather
+// than applied while paging: a ceiling that simply stopped the loop handed back
+// a short file whose only notice was an X-Row-Limit header, and nothing on a
+// download shows response headers. The button would read "Export 12500
+// transactions" and the attachment would hold 10000.
 const MAX_ROWS = 10_000;
 
 const HEADERS = [
@@ -32,6 +37,9 @@ function noStore(extra: Record<string, string> = {}): Record<string, string> {
   };
 }
 
+// The body is always our own sentence, never the driver's: this text is served
+// to the browser as-is, and a Postgres message names tables and constraints the
+// reader can do nothing with.
 function failure(message: string, status: number) {
   return new NextResponse(message, {
     status,
@@ -60,32 +68,68 @@ export async function GET(request: NextRequest) {
     .select("id, name");
 
   if (categoriesError) {
-    return failure(`Could not load categories: ${categoriesError.message}`, 500);
+    return failure(
+      "Could not load your categories, so the export stopped. Please try again.",
+      500
+    );
   }
 
   const categoryNames = new Map(
     (categories ?? []).map((category) => [category.id, category.name])
   );
 
+  // Counted before a single row is fetched, so an over-cap set is refused rather
+  // than quietly truncated. The same builder and the same filters as the loop
+  // below, so the count and the rows cannot disagree about what "this export"
+  // covers. Refusing is the honest outcome: a partial file is indistinguishable
+  // from a complete one once it is on disk, and the date filters already let the
+  // user take the set in parts.
+  const { count, error: countError } = await buildTransactionsQuery(
+    supabase,
+    filters,
+    { count: true, head: true }
+  );
+
+  if (countError) {
+    return failure("Could not export your transactions. Please try again.", 500);
+  }
+
+  const total = count ?? 0;
+
+  if (total > MAX_ROWS) {
+    return failure(
+      `That is ${total} transactions, more than the ${MAX_ROWS} one file can ` +
+        "hold. Narrow the date range and export in parts.",
+      400
+    );
+  }
+
   const rows: string[][] = [HEADERS];
-  let reachedLimit = false;
 
-  for (let offset = 0; ; offset += BATCH_SIZE) {
-    if (offset >= MAX_ROWS) {
-      // Only reachable when the previous batch was full, so this genuinely means
-      // "there may be more rows" rather than "we happened to land on the cap".
-      reachedLimit = true;
-      break;
-    }
+  // Stepped by the rows actually returned and stopped by the exact `total`
+  // counted above. The old exit -- a batch shorter than BATCH_SIZE -- is only
+  // right while the project's PostgREST max-rows is at least BATCH_SIZE. Lower
+  // that cap (it is a per-project setting) and every batch comes back clamped,
+  // so the first short batch ended the loop and the file was silently short.
+  // Stepping by batch.length keeps the windows contiguous under any cap.
+  let offset = 0;
 
+  while (offset < total) {
     const { data, error } = await buildTransactionsQuery(supabase, filters).range(
       offset,
       offset + BATCH_SIZE - 1
     );
 
-    if (error) return failure(`Could not export transactions: ${error.message}`, 500);
+    if (error) {
+      return failure("Could not export your transactions. Please try again.", 500);
+    }
 
     const batch: Transaction[] = data ?? [];
+
+    // No rows, yet `total` says there are some: the cap is swallowing whole
+    // windows, so the loop cannot make progress. Stop and let the check below
+    // report the short file instead of spinning.
+    if (batch.length === 0) break;
 
     for (const transaction of batch) {
       rows.push([
@@ -103,7 +147,14 @@ export async function GET(request: NextRequest) {
       ]);
     }
 
-    if (batch.length < BATCH_SIZE) break;
+    offset += batch.length;
+  }
+
+  // The count was taken with the same builder and filters as these rows, so a
+  // mismatch means rows were truncated in transit and the file would be short.
+  // Refusing beats handing back a partial file that looks complete.
+  if (rows.length - 1 !== total) {
+    return failure("Could not export every transaction. Please try again.", 500);
   }
 
   const headers = noStore({
@@ -111,9 +162,6 @@ export async function GET(request: NextRequest) {
     // Never derived from the query string, or a crafted q could inject a header.
     "Content-Disposition": `attachment; filename="transactions-${todayISO()}.csv"`,
   });
-
-  // Present only when the file is short of the full filtered set.
-  if (reachedLimit) headers["X-Row-Limit"] = String(MAX_ROWS);
 
   return new NextResponse(toCsv(rows), { status: 200, headers });
 }

@@ -107,6 +107,7 @@ export function normalizeBudgetProgress(data: unknown): BudgetProgressRow[] {
 
     const row = raw as Record<string, unknown>;
     const categoryId = asString(row.category_id);
+    const budgetId = asString(row.budget_id);
     const categoryName = asString(row.category_name);
     const budgetAmount = asNumber(row.budget_amount);
     const spentAmount = asNumber(row.spent_amount);
@@ -114,6 +115,7 @@ export function normalizeBudgetProgress(data: unknown): BudgetProgressRow[] {
 
     if (
       categoryId === null ||
+      budgetId === null ||
       categoryName === null ||
       budgetAmount === null ||
       spentAmount === null ||
@@ -124,6 +126,7 @@ export function normalizeBudgetProgress(data: unknown): BudgetProgressRow[] {
 
     rows.push({
       categoryId,
+      budgetId,
       categoryName,
       budgetAmount,
       spentAmount,

@@ -48,9 +48,29 @@ export function formatDate(isoDate: string) {
   });
 }
 
+// The app's calendar is Philippine, declared here instead of inferred from the
+// host. Reading the process's own offset made "today" depend on where the server
+// runs: on a UTC host the Manila user's first eight hours of the 1st still looked
+// like the previous month, which is the default month /dashboard and
+// /dashboard/budgets open on, and it also dates the export filename. A fixed zone
+// returns the same date from every host, with no host setting to trust.
+const APP_TIME_ZONE = "Asia/Manila";
+
+const isoDate = new Intl.DateTimeFormat("en-CA", {
+  timeZone: APP_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+// Assembled from parts rather than taken from format() directly: this value is
+// compared as a string against occurred_on and deadline, and sliced to 7 for the
+// month, so the YYYY-MM-DD shape has to be a guarantee of this function rather
+// than a convention of whichever locale and ICU data happen to be installed.
 export function todayISO() {
-  // Local calendar date, not the UTC one, so the default isn't off by a day.
-  const now = new Date();
-  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
-  return local.toISOString().slice(0, 10);
+  const parts = isoDate.formatToParts(new Date());
+  const value = (type: string) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+
+  return `${value("year")}-${value("month")}-${value("day")}`;
 }

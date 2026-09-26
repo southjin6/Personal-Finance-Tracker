@@ -12,7 +12,15 @@ export const UUID_PATTERN =
 
 // A shape check alone lets 2026-02-31 through, which would reach Postgres and
 // fail there with a raw error. Round-trip it to prove it is a real calendar date.
+//
+// The round trip cannot see year 0: JS Date accepts 0000-01-01 and hands the
+// same string back, while PostgreSQL's date has no year 0 ("date/time field
+// value out of range"). Every caller is a date bound for Postgres, so the year
+// is refused here. A five-digit year needs no such guard -- the round trip
+// already stops matching, because toISOString pads to six digits.
 export function isRealISODate(value: string) {
+  if (value.startsWith("0000-")) return false;
+
   const date = new Date(`${value}T00:00:00Z`);
   return (
     !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
@@ -29,6 +37,15 @@ export function isRealISODate(value: string) {
 // silently round. {1,10} integer digits + {1,2} decimals mirrors numeric(12,2).
 // The "> 0" half of the bound is left to each consumer, because the message has
 // to name the field ("Amount must be greater than 0" vs "Limit must be ...").
+//
+// Only the integer half of that mirror reaches the table. numeric(12,2) rejects
+// an 11th digit outright ("numeric field overflow"), but it rounds extra
+// decimals instead of refusing them, and no table-side rule can catch that:
+// coercion to the column's scale happens before the CHECK constraints *and*
+// before any BEFORE trigger, so a trigger firing on 1.999 sees 2.00. Detecting
+// it would mean giving up the fixed-scale type, which is exactly what makes the
+// digit bound free. So "at most 2 decimals" is a form rule -- a message for
+// someone typing, not a promise about what a REST caller can store.
 const amountField = z
   .string()
   .trim()
@@ -82,13 +99,17 @@ export type CategoryRenameInput = z.infer<typeof categoryRenameSchema>;
 // Blank means "nothing saved yet", which is the normal case for a new goal, so
 // an empty box is valid rather than an error — the action turns "" into 0.
 // AMOUNT_PATTERN has no sign, so a negative value cannot be entered at all.
+// `.default("")` covers the one case the refine cannot reach: a request that
+// omits the key outright. Without it zod raises invalid_type and its own
+// "Required" copy is what the toast prints; with it, absent is the same as blank.
 const optionalAmountField = z
   .string()
   .trim()
   .refine(
     (value) => value.length === 0 || AMOUNT_PATTERN.test(value),
     "Enter a valid amount, like 12.50"
-  );
+  )
+  .default("");
 
 // Blank means "no deadline". A shape check alone would let 2026-02-31 through,
 // so round-trip it the same way transactionSchema.occurred_on does.
@@ -100,7 +121,8 @@ const optionalDateField = z
       value.length === 0 ||
       (ISO_DATE_PATTERN.test(value) && isRealISODate(value)),
     "Choose a valid date"
-  );
+  )
+  .default("");
 
 export const savingsGoalSchema = z
   .object({

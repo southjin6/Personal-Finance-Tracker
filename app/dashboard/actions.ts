@@ -9,7 +9,11 @@ import {
   type ActionState,
   type Supabase,
 } from "@/lib/actions";
-import { transactionSchema, type TransactionInput } from "@/lib/validations";
+import {
+  transactionSchema,
+  UUID_PATTERN,
+  type TransactionInput,
+} from "@/lib/validations";
 
 export type TransactionFormState = ActionState;
 
@@ -23,13 +27,27 @@ function parseForm(formData: FormData) {
 
 // The database does not enforce that a transaction's type matches its
 // category's type, so check it here.
-async function categoryMatchesType(supabase: Supabase, data: TransactionInput) {
-  const { data: category } = await supabase
+async function categoryMatchesType(
+  supabase: Supabase,
+  userId: string,
+  data: TransactionInput
+) {
+  const { data: category, error } = await supabase
     .from("categories")
     .select("type")
     .eq("id", data.category_id)
+    // Paired with the owner, the way every other read of a caller-supplied
+    // category id is -- see saveBudget in app/dashboard/budgets/actions.ts. RLS
+    // already hides another user's category, so this is a second barrier rather
+    // than the only one: without it, a policy regression would let a foreign
+    // category pass this check and leave the composite foreign key to catch the
+    // write, which it does with a message about something else entirely.
+    .eq("user_id", userId)
     .maybeSingle();
 
+  // Distinct from the branch below on purpose: a failed read means we could not
+  // ask, which is not the same claim as "that id is not one of yours".
+  if (error) return messageForError(error);
   if (!category) return "Choose a valid category.";
   if (category.type !== data.type) {
     return "That category does not match the transaction type.";
@@ -57,7 +75,7 @@ export async function createTransaction(
   const parsed = parseForm(formData);
   if ("error" in parsed) return { error: parsed.error };
 
-  const mismatch = await categoryMatchesType(supabase, parsed.data);
+  const mismatch = await categoryMatchesType(supabase, userId, parsed.data);
   if (mismatch) return { error: mismatch };
 
   const { error } = await supabase
@@ -75,15 +93,19 @@ export async function updateTransaction(
 ): Promise<TransactionFormState> {
   const { supabase, userId } = await requireUser();
 
+  // Shape-checked rather than merely non-empty: a junk id reaches PostgREST as a
+  // uuid comparison and fails there with 22P02, which messageForError has no
+  // branch for -- the caller would get generic copy where a missing row says
+  // "not found". Same guard as updateGoal in app/dashboard/goals/actions.ts.
   const id = formData.get("id");
-  if (typeof id !== "string" || id.length === 0) {
-    return { error: "Missing transaction id." };
+  if (typeof id !== "string" || !UUID_PATTERN.test(id)) {
+    return { error: "Transaction not found." };
   }
 
   const parsed = parseForm(formData);
   if ("error" in parsed) return { error: parsed.error };
 
-  const mismatch = await categoryMatchesType(supabase, parsed.data);
+  const mismatch = await categoryMatchesType(supabase, userId, parsed.data);
   if (mismatch) return { error: mismatch };
 
   const { data, error } = await supabase
@@ -108,8 +130,8 @@ export async function deleteTransaction(
 ): Promise<TransactionFormState> {
   const { supabase, userId } = await requireUser();
 
-  if (typeof id !== "string" || id.length === 0) {
-    return { error: "Missing transaction id." };
+  if (typeof id !== "string" || !UUID_PATTERN.test(id)) {
+    return { error: "Transaction not found." };
   }
 
   const { data, error } = await supabase

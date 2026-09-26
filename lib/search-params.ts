@@ -84,12 +84,21 @@ const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 // The clock is an argument rather than a hidden new Date() so the parser is
 // deterministic; currentMonth() below is the single place that reads it.
+//
+// MONTH_PATTERN bounds the month number and the year's width, not the year
+// itself, and this value is sent on as firstOfMonth(month): a year the date type
+// cannot hold would reach the RPC as '0000-01-01' and come back as a raw error
+// rather than a fallback. Asking isRealISODate about the exact string the RPC
+// will receive leaves "year 0 is not a date" in one place, next to the same
+// rejection the from/to filters already get.
 export function parseMonth(
   raw: string | string[] | undefined,
   currentMonth: string
 ): string {
   const value = firstParam(raw).trim();
-  return MONTH_PATTERN.test(value) ? value : currentMonth;
+  return MONTH_PATTERN.test(value) && isRealISODate(firstOfMonth(value))
+    ? value
+    : currentMonth;
 }
 
 export function currentMonth(): string {
@@ -168,4 +177,10 @@ export function clearFiltersHref(query: DashboardQuery): string {
 // between the two pages.
 export function budgetsHref(month: string | null): string {
   return `/dashboard/budgets${dashboardSearch({ ...NO_FILTERS, page: null, month })}`;
+}
+
+// The goals page has no filters either, so the page is the only thing its URL
+// carries -- and page 1 is the bare path, the same rule the month follows.
+export function goalsHref(page: number): string {
+  return page > 1 ? `/dashboard/goals?page=${page}` : "/dashboard/goals";
 }

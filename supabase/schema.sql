@@ -11,10 +11,23 @@ create table if not exists public.profiles (
   id          uuid primary key references auth.users (id) on delete cascade,
   full_name   text,
   avatar_url  text,
-  currency    text not null default 'PHP',
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
+
+-- profiles.currency is gone. Nothing ever read or wrote it -- no TypeScript in
+-- this app touches the profiles table except handle_new_user(), which inserts
+-- id/full_name/avatar_url -- and the app is single-currency throughout: see
+-- formatPHP in lib/format.ts, the literal in the CSV export route, and the
+-- README. A column that only ever held its default is a promise the code does
+-- not keep, and a future reader would reasonably assume editing it changes the
+-- displayed currency.
+--
+-- Dropped via ALTER for the usual reason: "create table if not exists" is a
+-- no-op on a database that already has the table, so removing the line above
+-- would leave the column behind on every existing database. No data is lost --
+-- every row holds the default 'PHP', which is also what the app hardcodes.
+alter table public.profiles drop column if exists currency;
 
 create table if not exists public.categories (
   id          uuid primary key default gen_random_uuid(),
@@ -102,8 +115,9 @@ create index if not exists transactions_user_id_occurred_on_idx
 -- The unique constraint above indexes (user_id, category_id); the RI trigger
 -- fired by a category delete looks referencing rows up by (category_id,
 -- user_id), which that index cannot serve -- its leading column is user_id.
--- Same reasoning as transactions_category_id_user_id_idx, whose index the
--- inline unique constraint on transactions does not provide either.
+-- Same reasoning as transactions_category_id_user_id_idx below: a foreign key
+-- does not index its referencing side, and no unique constraint here covers
+-- (category_id, user_id).
 create index if not exists category_budgets_category_id_user_id_idx
   on public.category_budgets (category_id, user_id);
 
@@ -112,15 +126,38 @@ create index if not exists category_budgets_category_id_user_id_idx
 -- The Server Actions validate with zod, but PostgREST is a public API: anyone
 -- holding a session can POST /rest/v1/transactions directly and skip that layer
 -- entirely. There is no Server Action in the path for those requests, so the
--- limit has to exist in the table. Bounds mirror lib/validations.ts.
+-- limit has to exist in the table. Bounds mirror lib/validations.ts -- with one
+-- gap no bound here can close: the amount columns' "at most 2 decimals" rule is
+-- unenforceable at the table. numeric(12,2) rounds an over-precise value before
+-- the CHECK constraints and before any BEFORE trigger see it, so only its digit
+-- bound survives (an 11th digit overflows). The reasoning, and why that trade
+-- is the right one, is on amountField in lib/validations.ts.
 -- Named and applied via ALTER rather than inline in CREATE TABLE so that
 -- re-running this file also upgrades a database created by an earlier version
 -- of it, where "create table if not exists" is a no-op.
+--
+-- Every ADD CONSTRAINT in this section is preceded by a statement that repairs
+-- the rows that bound would reject, and that is not decoration. The SQL Editor
+-- runs this whole file as ONE transaction, so one ADD CONSTRAINT failing on a
+-- pre-existing row rolls back every statement in the file -- tables, grants,
+-- policies and functions alike -- and leaves the operator with a raw "is
+-- violated by some row" naming a constraint they have never heard of. A row can
+-- genuinely predate a bound: the version of this file that created the table
+-- had no such bound to reject it. Each repair is a no-op on a database that
+-- already satisfies the bound, which is what the ALTER form is for.
 -- ---------------------------------------------------------------------------
+
+-- Over-long values are truncated to the bound rather than deleted, so the row
+-- survives with everything up to the limit. The app has never been able to write
+-- one: this is the shape of a hand-inserted or pre-file row.
+update public.transactions set notes = left(notes, 500) where char_length(notes) > 500;
 
 alter table public.transactions drop constraint if exists transactions_notes_length;
 alter table public.transactions add constraint transactions_notes_length
   check (notes is null or char_length(notes) <= 500);
+
+update public.transactions set payment_method = left(payment_method, 50)
+ where char_length(payment_method) > 50;
 
 alter table public.transactions drop constraint if exists transactions_payment_method_length;
 alter table public.transactions add constraint transactions_payment_method_length
@@ -128,30 +165,43 @@ alter table public.transactions add constraint transactions_payment_method_lengt
 
 -- No UI writes these two yet, but the grants below let a session reach them
 -- over REST, so the bounds belong here regardless.
+--
+-- "Between 1 and 100" can be violated in two directions, and only one of them
+-- repairs mechanically. A long name is truncated like the notes above; an empty
+-- one cannot be clamped without inventing a name, so it is given an explicit
+-- marker instead. The row is kept, and the marker satisfies the same rule the
+-- app applies to a name, so the category stays editable rather than becoming a
+-- row the UI refuses to save.
+update public.categories
+   set name = case when char_length(name) = 0 then '(unnamed)' else left(name, 100) end
+ where char_length(name) = 0 or char_length(name) > 100;
+
 alter table public.categories drop constraint if exists categories_name_length;
 alter table public.categories add constraint categories_name_length
   check (char_length(name) between 1 and 100);
+
+-- The same two directions and the same repairs as categories.name above.
+update public.savings_goals
+   set name = case when char_length(name) = 0 then '(unnamed)' else left(name, 100) end
+ where char_length(name) = 0 or char_length(name) > 100;
 
 alter table public.savings_goals drop constraint if exists savings_goals_name_length;
 alter table public.savings_goals add constraint savings_goals_name_length
   check (char_length(name) between 1 and 100);
 
 -- target_amount already has "> 0"; saved_amount was left wide open, so a goal
--- could be seeded at a negative balance.
+-- could be seeded at a negative balance. Clamped up to the floor, the mirror of
+-- the ceiling clamp below.
+update public.savings_goals set saved_amount = 0 where saved_amount < 0;
+
 alter table public.savings_goals drop constraint if exists savings_goals_saved_amount_non_negative;
 alter table public.savings_goals add constraint savings_goals_saved_amount_non_negative
   check (saved_amount >= 0);
 
 -- A goal cannot be funded past its target. The goals page enforces this in zod,
 -- but that layer is skippable over REST (see the note at the top of this
--- section), so the ceiling belongs in the table too.
---
--- The clamp is the price of adding that ceiling to a table which already
--- exists, and it is not decoration: the SQL Editor runs this whole file as ONE
--- transaction, so a single ADD CONSTRAINT that fails on an existing over-funded
--- row would roll back every statement in the file. Clamping first makes the
--- constraint safe to add. It is a no-op on a fresh database, and savings_goals
--- has never had a UI, so in practice it can only touch hand-inserted rows.
+-- section), so the ceiling belongs in the table too. Over-funding is repaired
+-- down to the target, which is the point the goal was aiming for.
 update public.savings_goals set saved_amount = target_amount where saved_amount > target_amount;
 
 alter table public.savings_goals drop constraint if exists savings_goals_saved_amount_within_target;
@@ -238,11 +288,21 @@ create policy "Users manage their own category budgets"
 
 grant usage on schema public to anon, authenticated;
 
--- "anon" is deliberately absent for category_budgets. The anon selects are
--- vestigial -- every page reads through an authenticated session -- and a
--- budget reveals what a user spends on a category, which is the one table here
--- whose emptiness for an unauthenticated caller is worth not re-deciding later.
-grant select on public.profiles, public.categories, public.transactions, public.savings_goals to anon;
+-- anon holds nothing on these tables, and this revoke -- not the grant list --
+-- is what makes that true. Supabase installs ALTER DEFAULT PRIVILEGES in schema
+-- public, so each table above was handed select, insert, update, delete,
+-- truncate, references and trigger to anon and authenticated at CREATE TABLE
+-- time, before this file could object. A grant list cannot take a privilege
+-- away, which is why the "grant select to anon" line that used to sit here
+-- never bound anything: the live database had already given anon full DML on
+-- all five tables, category_budgets included. Only a revoke removes a
+-- privilege, so this statement is the one doing the work.
+--
+-- anon had no data to lose: every page reads through an authenticated session.
+-- The five policies above are the second barrier -- all scoped to authenticated,
+-- so none of them matches an anon caller -- but RLS was never the first one here.
+revoke all on public.profiles, public.categories, public.transactions,
+  public.savings_goals, public.category_budgets from anon;
 grant select, insert, update, delete on public.profiles, public.categories, public.transactions, public.savings_goals, public.category_budgets to authenticated;
 
 -- ---------------------------------------------------------------------------
@@ -293,9 +353,12 @@ as $$
          c.name,
          c.type,
          -- Direction comes from the transaction, NOT from the category. A direct
-         -- REST caller can file an expense against an income category, since the
-         -- database cannot check that pair cheaply; deriving the direction here
-         -- keeps the cards and the chart in agreement about which way money moved.
+         -- REST caller can file an expense against an income category: the keys
+         -- here do not pair the two type columns. A three-column key --
+         -- (category_id, user_id, type) against a unique (id, user_id, type) --
+         -- would enforce it for the price of one index, but does not exist, so
+         -- deriving the direction here keeps the cards and the chart in
+         -- agreement about which way money moved.
          sum(case when t.type = 'income'  then t.amount else 0 end)::numeric(14, 2) as income_total,
          sum(case when t.type = 'expense' then t.amount else 0 end)::numeric(14, 2) as expense_total,
          count(*)                                                                    as txn_count
@@ -313,8 +376,14 @@ as $$
 $$;
 
 -- Order matters: CREATE FUNCTION grants EXECUTE to PUBLIC by default, so the
--- revoke has to come before the grant for authenticated or anon would keep it.
-revoke all on function public.monthly_summary(date) from public;
+-- revoke has to come before the grant for authenticated. anon is named
+-- explicitly because the PUBLIC revoke does not reach it: Supabase's default
+-- privileges grant EXECUTE on new functions in public to anon directly, and a
+-- direct grant survives REVOKE ... FROM PUBLIC. Left off, the RPC stayed
+-- callable with the public anon key -- returning [] rather than an error, since
+-- the body's auth.uid() predicate simply matched no rows, which made it a
+-- working endpoint rather than a loud one.
+revoke all on function public.monthly_summary(date) from public, anon;
 grant execute on function public.monthly_summary(date) to authenticated;
 
 -- Budget vs. actual for one month: every budget the caller owns, with what has
@@ -336,9 +405,26 @@ grant execute on function public.monthly_summary(date) to authenticated;
 -- Defined after monthly_summary because a language sql body is parsed and
 -- resolved at CREATE time, and search_path = '' means the reference has to be
 -- schema-qualified -- the function must already exist.
+--
+-- The budget's own id travels with the row. The page needs it for exactly one
+-- thing -- the edit and delete the card offers -- and reading it from a second
+-- query over category_budgets meant capping that query somewhere, after which a
+-- budget the aggregate still reported had no buttons and could not be changed.
+-- One source for the amounts and the identifier removes the cap and the
+-- disagreement together. b.id, not b.category_id: one budget per category, so
+-- the pair identifies the same row, but only the budget's own id is what a
+-- delete addresses.
+--
+-- Dropped first: a RETURNS TABLE cannot change shape in place, so create or
+-- replace fails with "cannot change return type of existing function". The
+-- revoke/grant pair below re-applies to whatever this creates, and a whole-file
+-- paste runs in one transaction, so nothing observes the gap.
+drop function if exists public.monthly_budget_progress(date);
+
 create or replace function public.monthly_budget_progress(p_month date)
 returns table (
   category_id       uuid,
+  budget_id         uuid,
   category_name     text,
   budget_amount     numeric(12, 2),
   spent_amount      numeric(14, 2),
@@ -350,6 +436,7 @@ security invoker
 set search_path = ''
 as $$
   select b.category_id,
+         b.id,
          c.name,
          b.amount,
          coalesce(s.expense_total, 0)::numeric(14, 2),
@@ -363,22 +450,37 @@ as $$
   order by c.name, b.category_id;
 $$;
 
-revoke all on function public.monthly_budget_progress(date) from public;
+-- anon named for the same reason as monthly_summary above: Supabase's direct
+-- EXECUTE grant to anon is not undone by REVOKE ... FROM PUBLIC.
+revoke all on function public.monthly_budget_progress(date) from public, anon;
 grant execute on function public.monthly_budget_progress(date) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- updated_at maintenance
 -- ---------------------------------------------------------------------------
 
+-- search_path pinned for the same reason as every other function here: an empty
+-- search_path stops a caller-supplied schema from shadowing a name the body
+-- uses. This body calls only now(), which needs no qualification -- pg_catalog
+-- is searched implicitly even when search_path is empty.
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
+set search_path = ''
 as $$
 begin
   new.updated_at = now();
   return new;
 end;
 $$;
+
+-- A `returns trigger` function cannot be invoked directly: Postgres refuses it
+-- outside a trigger ("trigger functions can only be called as triggers") and
+-- PostgREST does not expose one. So PUBLIC's default EXECUTE is unreachable, and
+-- no role needs a grant it can never use. Verified before revoking: a role with
+-- has_function_privilege(..., 'execute') = false successfully fired a trigger,
+-- because firing does not check EXECUTE.
+revoke all on function public.set_updated_at() from public, anon, authenticated;
 
 drop trigger if exists profiles_set_updated_at on public.profiles;
 create trigger profiles_set_updated_at
@@ -450,6 +552,12 @@ begin
   return new;
 end;
 $$;
+
+-- Same as set_updated_at above: fired by a trigger on auth.users, never called.
+-- SECURITY DEFINER makes an unreachable EXECUTE grant more worth removing, not
+-- less -- the body runs as the definer, so the safe state is one where nothing
+-- can reach it.
+revoke all on function public.handle_new_user() from public, anon, authenticated;
 
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created

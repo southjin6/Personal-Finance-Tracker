@@ -22,13 +22,17 @@ export function escapeLikePattern(value: string): string {
 export function buildTransactionsQuery(
   supabase: Supabase,
   filters: TransactionFilters,
-  options?: { count?: boolean }
+  // head returns the count and no rows, which is how the export asks how big the
+  // set is before committing to serving it.
+  options?: { count?: boolean; head?: boolean }
 ) {
   let query = supabase
     .from("transactions")
     .select(
       TRANSACTION_COLUMNS,
-      options?.count ? { count: "exact" } : undefined
+      options?.count
+        ? { count: "exact", head: options.head ?? false }
+        : undefined
     );
 
   if (filters.type) query = query.eq("type", filters.type);

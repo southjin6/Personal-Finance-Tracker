@@ -24,7 +24,8 @@ Amounts are in PHP (₱).
   list below keeps its own date filters, so its pagination stays unambiguous
 - Find and export: filter by type, category, date range and notes text, then download
   exactly the filtered set as CSV
-- Savings goals with progress toward a target, an optional deadline, and overdue highlighting
+- Savings goals with progress toward a target, an optional deadline, overdue highlighting,
+  and the same paging the transaction list uses
 - Category budgets: one recurring limit per expense category, applied to whichever month is
   selected. The dashboard shows the limits that exist as a compact block, and `/dashboard/budgets`
   has the full cards, with a bar that turns red once a category is over
