@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { GoogleSignInButton } from "./google-sign-in-button";
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -50,6 +52,15 @@ export default async function LoginPage({
         ) : null}
 
         <GoogleSignInButton />
+
+        <p className="text-center text-xs">
+          <Link
+            href="/privacy"
+            className="text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
+          >
+            Privacy Policy
+          </Link>
+        </p>
       </div>
     </main>
   );
