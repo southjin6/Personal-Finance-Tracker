@@ -22,8 +22,9 @@ function axisPeso(cents: number) {
 
 // One series, so one colour: cycling a palette across bars of the same series
 // implies a second dimension that is not there, and the length of the bar is
-// already the value. The greyscale ramp in --chart-1..5 is therefore unused
-// here; the bucket that is not a single category is marked by opacity instead.
+// already the value. So --chart-2 carries it and the rest of the greyscale ramp
+// in --chart-1..5 goes unused; the bucket that is not a single category is marked
+// by opacity instead.
 export function SpendingChart({ slices }: { slices: SpendingSlice[] }) {
   const total = slices.reduce((sum, slice) => sum + slice.expenseCents, 0);
 

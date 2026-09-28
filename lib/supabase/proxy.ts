@@ -6,11 +6,12 @@ import { AUTH_COOKIE_OPTIONS } from "./cookie-options";
 const PROTECTED_PATHS = ["/dashboard"];
 
 // `nextUrl.pathname` keeps the raw spelling from the request, so comparing it
-// directly misses "/%64ashboard", "/DASHBOARD" and "//dashboard". Today those
-// all 404 before the dashboard layout ever runs, so nothing is reachable through
-// them — but a guard that quietly skips is worse than no guard, because it hides
-// the day a route stops being covered. Normalise first: decode, collapse
-// repeated slashes, drop a trailing slash, compare case-insensitively.
+// directly misses "/%64ashboard", "/DASHBOARD" and "//dashboard". None of them
+// reaches the dashboard layout today — the first two 404, and a repeated slash is
+// collapsed by a 308 redirect before routing — but a guard that quietly skips is
+// worse than no guard, because it hides the day a route stops being covered.
+// Normalise first: decode, collapse repeated slashes, drop a trailing slash,
+// compare case-insensitively.
 function isProtected(pathname: string) {
   let decoded = pathname;
 

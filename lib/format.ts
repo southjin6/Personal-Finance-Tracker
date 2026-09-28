@@ -12,8 +12,9 @@ export function formatPHP(amount: number) {
   return peso.format(amount);
 }
 
-// Cents in, currency out. The division is display-only, which is the one place
-// lib/money.ts allows a float: the formatter rounds it back to two decimals.
+// Cents in, currency out. The division is display-only and the formatter rounds
+// it back to two decimals, which is the only form lib/money.ts tolerates a float
+// in — the chart's axis formatter divides the same way, for the same reason.
 export function formatPHPFromCents(cents: number) {
   return peso.format(cents / 100);
 }
@@ -64,9 +65,10 @@ const isoDate = new Intl.DateTimeFormat("en-CA", {
 });
 
 // Assembled from parts rather than taken from format() directly: this value is
-// compared as a string against occurred_on and deadline, and sliced to 7 for the
-// month, so the YYYY-MM-DD shape has to be a guarantee of this function rather
-// than a convention of whichever locale and ICU data happen to be installed.
+// compared as a string against deadline, defaults the form's occurred_on field,
+// and is sliced to 7 for the month, so the YYYY-MM-DD shape has to be a guarantee
+// of this function rather than a convention of whichever locale and ICU data
+// happen to be installed.
 export function todayISO() {
   const parts = isoDate.formatToParts(new Date());
   const value = (type: string) =>

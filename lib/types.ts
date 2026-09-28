@@ -26,7 +26,8 @@ export type SavingsGoal = {
 };
 
 // A standing limit for one expense category, in force for every month. There is
-// no month column, so the id is what an edit or delete addresses.
+// no month column: an edit addresses the category it limits, since the row is
+// unique on (user_id, category_id), and only a delete uses this id.
 export type CategoryBudget = {
   id: string;
   category_id: string;
@@ -51,7 +52,9 @@ export type DashboardQuery = TransactionFilters & {
 };
 
 // One row of the monthly_summary() aggregate, exactly as PostgREST sends it:
-// the totals stay in the numeric(12,2) domain until lib/money.ts converts them.
+// the totals stay in the numeric domain until lib/money.ts converts them. That
+// domain is numeric(14,2) — the aggregate widens past the numeric(12,2) columns
+// it sums.
 // lib/insights.ts is the only module that builds these — the RPC payload is
 // untyped, so it is normalised there.
 export type MonthlySummaryRow = {
@@ -68,9 +71,9 @@ export type MonthlySummaryRow = {
 // converts them, and lib/insights.ts is the only module that builds these.
 // remainingAmount is signed on purpose — an overspent category shows a negative
 // balance rather than being clamped at zero, so the page can say how far over
-// the limit it went. budgetId is the budget's own id and is what an edit or a
-// delete addresses; it arrives in the same row as the amounts so the list has
-// one source for both.
+// the limit it went. budgetId is the budget's own id, which is what a delete
+// addresses — an edit addresses the category instead; it arrives in the same row
+// as the amounts so the list has one source for both.
 export type BudgetProgressRow = {
   categoryId: string;
   budgetId: string;

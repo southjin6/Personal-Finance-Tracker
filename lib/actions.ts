@@ -3,8 +3,9 @@ import * as z from "zod";
 
 import { createClient } from "@/lib/supabase/server";
 
-// Mutating actions return their failures instead of throwing, so every action
-// module in the app shares this shape.
+// Mutating actions return their failures instead of throwing, so the dashboard
+// action modules all share this shape. The auth `signOut` is the exception: it
+// redirects, so it returns nothing.
 export type ActionState = { error?: string; ok?: boolean };
 
 export type Supabase = Awaited<ReturnType<typeof createClient>>;

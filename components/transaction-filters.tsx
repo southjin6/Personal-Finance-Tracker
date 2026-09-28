@@ -28,9 +28,10 @@ export function TransactionFilters({
     <form
       method="get"
       action="/dashboard"
-      // Keyed by the canonical query so a soft navigation (a Clear click, a
-      // pagination link) remounts the controls and the URL stays the source of
-      // truth for what the fields show.
+      // Keyed by the canonical query minus the page, so a Clear click remounts the
+      // controls and the URL stays the source of truth for what the fields show.
+      // The page is deliberately left out: paging changes nothing else here, so
+      // the fields keep whatever has been typed but not yet submitted.
       key={dashboardSearch(query, { includePage: false })}
       className="bg-muted/40 grid gap-3 rounded-lg border p-3 sm:grid-cols-2 lg:grid-cols-4"
     >

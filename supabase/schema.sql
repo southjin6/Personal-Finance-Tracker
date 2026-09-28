@@ -163,8 +163,9 @@ alter table public.transactions drop constraint if exists transactions_payment_m
 alter table public.transactions add constraint transactions_payment_method_length
   check (payment_method is null or char_length(payment_method) <= 50);
 
--- No UI writes these two yet, but the grants below let a session reach them
--- over REST, so the bounds belong here regardless.
+-- Both name columns are written from the UI (the category rename and the goal
+-- form), but the grants below also let a session reach them over REST, so the
+-- bounds belong here regardless.
 --
 -- "Between 1 and 100" can be violated in two directions, and only one of them
 -- repairs mechanically. A long name is truncated like the notes above; an empty
