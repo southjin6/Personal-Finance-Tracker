@@ -65,6 +65,33 @@ Amounts are in PHP (₱).
 
    Open [http://localhost:3000](http://localhost:3000).
 
+## Deployment
+
+Live at **https://personal-finance-tracker-seven-khaki.vercel.app**.
+
+Vercel builds this repo from `main` through Git integration, so a push to `main` redeploys
+production. The project needs the same two environment variables as local development —
+`NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+
+Both are `NEXT_PUBLIC_*`, which Next inlines **at build time**. Two consequences are worth
+remembering: a variable missing from an environment's build compiles to the literal
+`undefined` (so Preview breaks while Production works), and **editing a value in the Vercel
+dashboard changes nothing until you redeploy**.
+
+Two dashboard settings make sign-in work, and neither of them lives in this repo:
+
+- **Supabase → Authentication → URL Configuration.** The Site URL must be the deployed
+  origin, and the redirect allowlist must contain `<deployed-origin>/auth/callback`. A
+  missing entry produces no error — Supabase silently falls back to the Site URL, so the
+  symptom is a sign-in that bounces to `localhost`.
+- **Google Cloud → Auth Platform → Audience.** Publishing status must be **In production**.
+  While it is **Testing**, only accounts on the test-user list can sign in; everyone else
+  meets Google's own "Access blocked" page before reaching the app. The scopes requested are
+  `email` and `profile` only, so publishing requires no Google verification.
+
+The database is not part of the deploy — `supabase/schema.sql` is applied by hand, once per
+Supabase project.
+
 ## Database
 
 Five tables — `profiles`, `categories`, `transactions`, `savings_goals` and
@@ -72,7 +99,7 @@ Five tables — `profiles`, `categories`, `transactions`, `savings_goals` and
 constrains both `using` and `with check`, so a session can only read and write rows it
 owns.
 
-Four details worth knowing:
+Five details worth knowing:
 
 - **`transactions.category_id` takes part in a composite foreign key** with `user_id`,
   referencing `categories (id, user_id)`. A single-column reference would not be enough:
@@ -88,8 +115,9 @@ Four details worth knowing:
   an `ADD CONSTRAINT`, and the SQL Editor runs this whole file as **one transaction** —
   so the statement is preceded by a one-line `UPDATE` that clamps any pre-existing
   over-funded row. Without it, a single hand-inserted bad row would roll back every
-  statement in the file. That `UPDATE` is the only statement in `schema.sql` that
-  changes data, and it is a no-op unless rows were inserted by hand.
+  statement in the file. Every bound added by an `ADD CONSTRAINT` is preceded by a repair
+  like this one — six in all, covering `notes`, `payment_method`, both `name` columns and
+  the two `saved_amount` bounds — and each is a no-op unless a row predates the bound.
 - **The monthly total is a `security invoker` SQL function, not a view.**
   `monthly_summary(p_month)` sums income and expenses per category for one month, and
   `/dashboard` calls it once per render. `security invoker` is the whole safety argument:
@@ -97,8 +125,9 @@ Four details worth knowing:
   `security definer` function runs as its owner and bypasses them, and a view created
   without `with (security_invoker = true)` reads with the owner's privileges as well —
   either one would expose every user's rows the moment a predicate was dropped. The file
-  grants execute to `authenticated` and revokes it from `public`, in that order, because
-  `CREATE FUNCTION` grants it to `PUBLIC` by default.
+  revokes execute from `public` and `anon` before granting it to `authenticated`, in that
+  order, because `CREATE FUNCTION` grants it to `PUBLIC` by default and Supabase grants it
+  to `anon` directly — and a direct grant survives a revoke from `PUBLIC`.
 
   Two smaller notes on it. The month argument is snapped to the first of its month inside
   the function, so a hand-crafted RPC call cannot ask for an off-month range. And money
@@ -116,8 +145,9 @@ Four details worth knowing:
   reads `monthly_summary` through a `left join lateral`, so a category with a limit and no
   spending still appears at zero, and the remaining amount is signed: an overspent category
   reports a negative balance instead of being clamped, which is what lets the bar go red
-  and say by how much. Like `monthly_summary` it is `security invoker`, and
-  `category_budgets` is the one table here with no `anon` grant at all.
+  and say by how much. Like `monthly_summary` it is `security invoker`, and like the other
+  four tables it carries no `anon` grant: one `revoke` after the policies strips anon's
+  privileges from all five, and that statement — not the grant list — is what does the work.
 
   One rule the database does not enforce: that a limit may only be set on an *expense*
   category. Checking it there would take a trigger reading another table on every write, so
@@ -168,8 +198,8 @@ superuser, so probing the policies as `postgres` passes everything and proves no
 
 ```
 app/                 routes — login, auth callback, dashboard
-  dashboard/         transactions, categories, goals and budgets, each with its own
-                     Server Actions
+  dashboard/         the transaction list and its Server Actions, plus a folder each
+                     for categories, goals and budgets
 components/          UI, including the form/list pair per feature
 lib/
   supabase/          browser, server and proxy clients, plus cookie options
@@ -187,8 +217,12 @@ proxy.ts             session refresh and route protection (Next 16's middleware)
 - Next.js 16 renames `middleware.ts` to `proxy.ts` and makes `cookies()`, `headers()`,
   `params` and `searchParams` async — worth knowing if you are coming from Next 14/15.
 - Auth cookies are `httpOnly`, and `secure` in production. The one deliberate exception
-  is the browser client, which must be able to read the short-lived PKCE verifier for the
-  Google sign-in round trip.
+  is the PKCE code verifier, which `@supabase/ssr` writes from the browser through
+  `document.cookie` and `/auth/callback` reads on the server. It cannot be `httpOnly`: a
+  browser discards a cookie carrying that attribute from a non-HTTP API rather than storing
+  it. It is single-use, and useless without the `code` that lands on the callback — but its
+  Max-Age is 400 days rather than minutes, because the library forces that on every cookie
+  it writes, so an abandoned sign-in leaves it in the browser.
 - **Money is exact where it counts, and only where it counts.** Amounts are `numeric(12,2)`
   in Postgres, and the per-category totals are summed there, by the database. Where
   JavaScript does have to add them, `lib/money.ts` converts to integer cents first —
