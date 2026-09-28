@@ -14,9 +14,31 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// The canonical origin. `metadataBase` resolves the relative URLs other metadata
+// emits -- the Open Graph image among them -- so it has to be absolute and must
+// not vary by request host. Change this if the deployment domain changes.
+const SITE_URL = "https://personal-finance-tracker-seven-khaki.vercel.app";
+
+const TITLE = "Personal Finance Tracker";
+const DESCRIPTION =
+  "Track income and expenses, and see where your money goes.";
+
 export const metadata: Metadata = {
-  title: "Personal Finance Tracker",
-  description: "Track income and expenses, and see where your money goes.",
+  metadataBase: new URL(SITE_URL),
+  title: TITLE,
+  description: DESCRIPTION,
+  openGraph: {
+    type: "website",
+    url: SITE_URL,
+    siteName: TITLE,
+    title: TITLE,
+    description: DESCRIPTION,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: TITLE,
+    description: DESCRIPTION,
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
